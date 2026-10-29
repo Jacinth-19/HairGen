@@ -61,18 +61,31 @@ vec2 equirectUV(vec3 d) {
 
 vec3 skyRadiance(vec3 d) { return texture(skyLUT, equirectUV(normalize(d))).rgb; }
 
+// Irradiance lookup. The LUT is dimmed below the horizon (the Preetham model
+// has no meaning there), so a direction that grazes y = 0 steps between bright
+// haze and the dimmed floor. Feeding that step into the ambient probe drew a
+// hard horizontal band across everything the probe lights -- most visibly the
+// hair, which samples the probe with near-horizontal directions along its
+// whole length. Lift the sample direction off the horizon so the probe sees a
+// continuous sky.
+vec3 skyProbe(vec3 d) {
+  d = normalize(d);
+  d.y = max(d.y, 0.10);
+  return skyRadiance(normalize(d));
+}
+
 // Cosine weighted average of the sky over the hemisphere around n: cheap IBL.
 vec3 skyAmbient(vec3 n, float roughness) {
   vec3 up = normalize(n);
   vec3 t1 = normalize(cross(abs(up.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), up));
   vec3 t2 = cross(up, t1);
   float spread = 0.35 + 0.9 * roughness;
-  vec3 acc = skyRadiance(up) * 1.4;
-  acc += skyRadiance(normalize(up + t1 * spread)) * 0.55;
-  acc += skyRadiance(normalize(up - t1 * spread)) * 0.55;
-  acc += skyRadiance(normalize(up + t2 * spread)) * 0.55;
-  acc += skyRadiance(normalize(up - t2 * spread)) * 0.55;
-  acc += skyRadiance(normalize(up * 0.4 + normalize(t1 + t2) * spread)) * 0.35;
+  vec3 acc = skyProbe(up) * 1.4;
+  acc += skyProbe(up + t1 * spread) * 0.55;
+  acc += skyProbe(up - t1 * spread) * 0.55;
+  acc += skyProbe(up + t2 * spread) * 0.55;
+  acc += skyProbe(up - t2 * spread) * 0.55;
+  acc += skyProbe(up * 0.4 + normalize(t1 + t2) * spread) * 0.35;
   return acc / 3.95;
 }
 

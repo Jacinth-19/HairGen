@@ -45,7 +45,10 @@ struct HairSettings {
         clump_exp = 0.0f;
   float curl_amount = 0.02f, curl_freq = 1.0f, curl_twists = 10.0f, curl_twist_exp = 0.3f, curl_exp = 0.0f;
 
-  float width_px = 1.9f;   // ribbon width in pixels
+  // Ribbon width in pixels. Thin ribbons (1.9) resolve the fibre structure but
+  // leave the mass looking like spun sugar; at 3.2 the locks overlap into
+  // proper opaque clumps, which is what reads as hair at portrait framing.
+  float width_px = 3.2f;
   int hair_count = 34000;
   int segments = 32;
 
@@ -127,14 +130,14 @@ inline const HairstylePreset kHairstyles[] = {
     // differentiate themselves in *texture*: curl/kink amount, clump structure,
     // fuzz (stray fibres) and ribbon width (how much of the mass each strand
     // covers). Values are tuned against the renderer, not guessed.
-    {"bob",    0.02f, 1.0f, 10.0f, 0.020f, 2.0f, 0.90f, 0.000f, 0.10f, 0.100f, 0.020f, 0.10f, 1.4f, 20000},
-    {"sleek",  0.03f, 1.2f,  9.0f, 0.010f, 1.4f, 0.96f, 0.000f, 0.04f, 0.030f, 0.008f, 0.05f, 1.3f, 26000},
-    {"wavy",   0.05f, 1.5f, 12.0f, 0.030f, 2.4f, 0.86f, 0.008f, 0.20f, 0.080f, 0.030f, 0.14f, 1.7f, 22000},
-    {"curly",  0.16f, 2.0f, 16.0f, 0.140f, 3.2f, 0.78f, 0.016f, 0.35f, 0.300f, 0.060f, 0.20f, 2.4f, 24000},
-    {"afro",   0.18f, 2.6f, 20.0f, 0.180f, 3.8f, 0.55f, 0.028f, 0.50f, 0.420f, 0.120f, 0.26f, 2.8f, 26000},
-    {"pixie",  0.09f, 1.8f, 14.0f, 0.070f, 2.8f, 0.82f, 0.010f, 0.28f, 0.180f, 0.045f, 0.30f, 2.0f, 22000},
-    {"long",   0.04f, 1.3f, 11.0f, 0.018f, 1.8f, 0.93f, 0.000f, 0.06f, 0.060f, 0.014f, 0.06f, 1.3f, 20000},
-    {"punk",   0.12f, 3.0f, 24.0f, 0.200f, 4.2f, 0.50f, 0.040f, 0.55f, 0.240f, 0.200f, 0.24f, 2.2f, 24000},
+    {"bob",    0.02f, 1.0f, 10.0f, 0.020f, 2.0f, 0.90f, 0.000f, 0.10f, 0.100f, 0.020f, 0.10f, 2.31f, 20000},
+    {"sleek",  0.03f, 1.2f,  9.0f, 0.010f, 1.4f, 0.96f, 0.000f, 0.04f, 0.030f, 0.008f, 0.05f, 2.15f, 26000},
+    {"wavy",   0.05f, 1.5f, 12.0f, 0.030f, 2.4f, 0.86f, 0.008f, 0.20f, 0.080f, 0.030f, 0.14f, 2.80f, 22000},
+    {"curly",  0.16f, 2.0f, 16.0f, 0.140f, 3.2f, 0.78f, 0.016f, 0.35f, 0.300f, 0.060f, 0.20f, 3.96f, 24000},
+    {"afro",   0.18f, 2.6f, 20.0f, 0.180f, 3.8f, 0.55f, 0.028f, 0.50f, 0.420f, 0.120f, 0.26f, 4.62f, 26000},
+    {"pixie",  0.09f, 1.8f, 14.0f, 0.070f, 2.8f, 0.82f, 0.010f, 0.28f, 0.180f, 0.045f, 0.30f, 3.30f, 22000},
+    {"long",   0.04f, 1.3f, 11.0f, 0.018f, 1.8f, 0.93f, 0.000f, 0.06f, 0.060f, 0.014f, 0.06f, 2.15f, 20000},
+    {"punk",   0.12f, 3.0f, 24.0f, 0.200f, 4.2f, 0.50f, 0.040f, 0.55f, 0.240f, 0.200f, 0.24f, 3.63f, 24000},
 };
 
 inline bool apply_hairstyle(struct HairSettings& h, const std::string& name) {
