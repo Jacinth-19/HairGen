@@ -175,6 +175,7 @@ meson test -C build          # add VK_ICD_FILENAMES=... to include the render te
 |---|---|
 | `media/stills/*.png` | hero shot, 5 hair styles, 4 lighting setups, 6 control sweeps, 5 mode stills |
 | `media/stills/mode_*.png` | lines vs ribbons, root samples, hair-mesh cage, no-collide |
+| `media/mode_comparison.png` | the four modes side by side |
 | `media/hero_1536.png` | 1536² hero render |
 | `media/contact_sheet.jpg` | 12-up overview |
 | `media/aa_off.png`, `media/aa_on.png` | 1× vs 4× MSAA |
