@@ -11,6 +11,11 @@ namespace hgen {
 bool write_png(const std::string& path, int width, int height, int channels,
                const uint8_t* pixels, int stride_bytes = 0);
 
+// In-memory variants (used by the preview server so no temp files are needed).
+std::vector<uint8_t> encode_png(int width, int height, int channels, const uint8_t* pixels,
+                                int stride_bytes = 0);
+std::vector<uint8_t> encode_png_rgba(int width, int height, const std::vector<uint8_t>& rgba);
+
 // Convenience: RGBA8 buffer as produced by the renderer.
 bool write_png_rgba(const std::string& path, int width, int height, const std::vector<uint8_t>& rgba);
 

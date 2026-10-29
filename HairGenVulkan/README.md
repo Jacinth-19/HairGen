@@ -103,6 +103,8 @@ hairgen --out render.png [options]
 
 ```sh
 ./build/hairgen --serve 8099 --size 640
+# on a CPU rasteriser use something like
+#   --size 384 --samples 1 --hair-count 6000   (~2 frames/s on lavapipe)
 ```
 
 `http://localhost:8099/` serves the panel in `assets/web/` (fixed preview on the
@@ -114,6 +116,10 @@ left, scrollable parameter column on the right, styled after the demo's
 | `POST /params` | JSON `{ "fuzz": 0.12, ... }` scene update |
 | `GET /stream` | MJPEG preview of live GPU frames |
 | `GET /snapshot.png` | single frame as PNG |
+| `GET /scene` | current camera/hair values as JSON |
+
+Connections are served on their own threads and the renderer is guarded by a
+render mutex, so the sliders keep working while a stream is live.
 
 ## Tests
 

@@ -9,11 +9,14 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "png.hpp"
@@ -165,12 +168,26 @@ void apply_params(Scene& s, const std::string& body) {
 
 }  // namespace
 
+// Shared between the accept loop and every live connection: the scene can be
+// edited while a stream is running, and rendering is serialised because the
+// Vulkan objects are not thread safe.
+struct Session {
+  std::mutex scene_mutex;   // guards `scene`
+  std::mutex render_mutex;  // guards the Renderer + readback buffer
+  Scene scene;
+  uint32_t frame = 0;
+  double time = 0.0;
+  std::atomic<int> live_streams{0};
+};
+
 struct WebServer::Impl {
   Gpu& gpu;
   const Assets& assets;
   Renderer& renderer;
   int port;
   int listen_fd = -1;
+  Session session;
+  std::string base_dir = "assets/web";
 };
 
 WebServer::WebServer(Gpu& gpu, const Assets& assets, Renderer& renderer, int port) {
@@ -181,6 +198,73 @@ WebServer::~WebServer() {
   if (impl_->listen_fd >= 0) ::close(impl_->listen_fd);
   delete impl_;
 }
+
+namespace {
+
+// Reads one request (headers + body) from a socket.
+bool read_request(int cfd, std::string& req, std::string& body) {
+  char buf[8192];
+  ssize_t n = ::recv(cfd, buf, sizeof(buf), 0);
+  if (n <= 0) return false;
+  req.assign(buf, size_t(n));
+  size_t header_end = req.find("\r\n\r\n");
+  while (header_end == std::string::npos && req.size() < 1024 * 1024) {
+    n = ::recv(cfd, buf, sizeof(buf), 0);
+    if (n <= 0) break;
+    req.append(buf, size_t(n));
+    header_end = req.find("\r\n\r\n");
+  }
+  body.clear();
+  if (header_end != std::string::npos) {
+    body = req.substr(header_end + 4);
+    size_t cl = 0;
+    size_t p = req.find("Content-Length:");
+    if (p != std::string::npos) cl = size_t(std::atol(req.c_str() + p + 15));
+    while (body.size() < cl) {
+      n = ::recv(cfd, buf, sizeof(buf), 0);
+      if (n <= 0) break;
+      body.append(buf, size_t(n));
+    }
+  }
+  return true;
+}
+
+std::string request_path(const std::string& req) {
+  if (req.compare(0, 4, "GET ") == 0 || req.compare(0, 5, "POST ") == 0) {
+    size_t start = req.find(' ') + 1;
+    size_t end = req.find(' ', start);
+    std::string path = req.substr(start, end - start);
+    size_t q = path.find('?');
+    if (q != std::string::npos) path = path.substr(0, q);
+    return path;
+  }
+  return "/";
+}
+
+void send_text(int cfd, const char* status, const char* type, const std::string& body) {
+  std::string h = http_headers(status, type, body.size());
+  send_all(cfd, h.data(), h.size());
+  send_all(cfd, body.data(), body.size());
+}
+
+// Renders one frame with the current scene and returns it as PNG bytes.
+std::vector<uint8_t> render_frame(WebServer::Impl& s, bool advance_time) {
+  Scene scene;
+  {
+    std::lock_guard<std::mutex> lock(s.session.scene_mutex);
+    scene = s.session.scene;
+  }
+  std::lock_guard<std::mutex> lock(s.session.render_mutex);
+  s.renderer.set_scene(scene);
+  if (advance_time) {
+    s.session.time += 1.0 / 30.0;
+    if (s.session.time > 1e6) s.session.time = 0.0;
+  }
+  s.renderer.render(s.session.time, s.session.frame++);
+  return encode_png_rgba(s.renderer.width(), s.renderer.height(), s.renderer.read_pixels());
+}
+
+}  // namespace
 
 int WebServer::run() {
   Impl& s = *impl_;
@@ -201,18 +285,20 @@ int WebServer::run() {
   }
   ::listen(fd, 16);
   s.listen_fd = fd;
+  s.session.scene = s.renderer.scene();
+
+  // The page is looked up relative to the working directory, the executable and
+  // the source tree so the binary runs from anywhere.
+  const char* dirs[] = {"assets/web", "../assets/web", "HairGenVulkan/assets/web"};
+  for (const char* d : dirs) {
+    if (!read_file(std::string(d) + "/index.html").empty()) {
+      s.base_dir = d;
+      break;
+    }
+  }
+
   printf("[hairgen] preview server on http://0.0.0.0:%d  (open the preview panel)\n", s.port);
   fflush(stdout);
-
-  std::string base_dir = "assets/web";
-  // Try a couple of locations so the binary works from the repo root or its own dir.
-  if (read_file(base_dir + "/index.html").empty()) base_dir = "HairGenVulkan/assets/web";
-
-  Scene scene = s.renderer.scene();
-  uint32_t frame = 0;
-  double t = 0.0;
-  bool dirty = true;
-  auto last = std::chrono::steady_clock::now();
 
   while (true) {
     sockaddr_in client{};
@@ -220,132 +306,82 @@ int WebServer::run() {
     int cfd = ::accept(fd, reinterpret_cast<sockaddr*>(&client), &clen);
     if (cfd < 0) continue;
     ::setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes));
-
-    // Read the request (headers + optional body).
-    std::string req;
-    char buf[8192];
-    ssize_t n = ::recv(cfd, buf, sizeof(buf), 0);
-    if (n <= 0) {
-      ::close(cfd);
-      continue;
-    }
-    req.append(buf, size_t(n));
-    size_t header_end = req.find("\r\n\r\n");
-    while (header_end == std::string::npos && req.size() < 1024 * 1024) {
-      n = ::recv(cfd, buf, sizeof(buf), 0);
-      if (n <= 0) break;
-      req.append(buf, size_t(n));
-      header_end = req.find("\r\n\r\n");
-    }
-    std::string body;
-    if (header_end != std::string::npos) {
-      body = req.substr(header_end + 4);
-      size_t cl = 0;
-      size_t p = req.find("Content-Length:");
-      if (p != std::string::npos) cl = size_t(std::atol(req.c_str() + p + 15));
-      while (body.size() < cl) {
-        n = ::recv(cfd, buf, sizeof(buf), 0);
-        if (n <= 0) break;
-        body.append(buf, size_t(n));
+    Impl* sp = &s;
+    std::thread([cfd, sp]() {
+      Impl& s = *sp;
+      std::string req, body;
+      if (!read_request(cfd, req, body)) {
+        ::close(cfd);
+        return;
       }
-    }
+      const std::string path = request_path(req);
 
-    std::string path = "/";
-    if (req.compare(0, 4, "GET ") == 0 || req.compare(0, 5, "POST ") == 0) {
-      size_t start = req.find(' ') + 1;
-      size_t end = req.find(' ', start);
-      path = req.substr(start, end - start);
-    }
-
-    if (path == "/" || path == "/index.html") {
-      std::string html = read_file(base_dir + "/index.html");
-      if (html.empty()) html = "<html><body><h1>HairGenVulkan</h1><p>assets/web/index.html missing</p></body></html>";
-      std::string h = http_headers("200 OK", "text/html; charset=utf-8", html.size());
-      send_all(cfd, h.data(), h.size());
-      send_all(cfd, html.data(), html.size());
-      ::close(cfd);
-      continue;
-    }
-    if (path == "/style.css" || path == "/app.js") {
-      std::string content = read_file(base_dir + path);
-      const char* type = path == "/style.css" ? "text/css" : "application/javascript";
-      std::string h = http_headers("200 OK", type, content.size());
-      send_all(cfd, h.data(), h.size());
-      send_all(cfd, content.data(), content.size());
-      ::close(cfd);
-      continue;
-    }
-    if (path == "/params" && !body.empty()) {
-      apply_params(scene, body);
-      s.renderer.set_scene(scene);
-      dirty = true;
-      const char* ok = "{\"ok\":true}";
-      std::string h = http_headers("200 OK", "application/json", std::strlen(ok));
-      send_all(cfd, h.data(), h.size());
-      send_all(cfd, ok, std::strlen(ok));
-      ::close(cfd);
-      continue;
-    }
-    if (path == "/snapshot.png") {
-      s.renderer.set_scene(scene);
-      s.renderer.render(t, frame++);
-      auto px = s.renderer.read_pixels();
-      // PNG encode in memory into a temp file for simplicity.
-      std::string tmp = "/tmp/hairgen_snapshot.png";
-      write_png_rgba(tmp, s.renderer.width(), s.renderer.height(), px);
-      std::string data = read_file(tmp);
-      std::string h = http_headers("200 OK", "image/png", data.size());
-      send_all(cfd, h.data(), h.size());
-      send_all(cfd, data.data(), data.size());
-      ::close(cfd);
-      continue;
-    }
-    if (path == "/stream") {
-      const char* head =
-          "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=hgenframe\r\n"
-          "Cache-Control: no-store\r\nConnection: close\r\n\r\n";
-      send_all(cfd, head, std::strlen(head));
-      s.renderer.set_scene(scene);
-      while (true) {
-        auto now = std::chrono::steady_clock::now();
-        double dt = std::chrono::duration<double>(now - last).count();
-        last = now;
-        t += dt;
-        (void)dt;
-        s.renderer.render(t, frame);
-        auto px = s.renderer.read_pixels();
-        std::string tmp = "/tmp/hairgen_stream.png";
-        write_png_rgba(tmp, s.renderer.width(), s.renderer.height(), px);
-        std::string png = read_file(tmp);
-        char part[256];
-        snprintf(part, sizeof(part),
-                 "--hgenframe\r\nContent-Type: image/png\r\nContent-Length: %zu\r\n\r\n", png.size());
-        send_all(cfd, part, std::strlen(part));
-        send_all(cfd, png.data(), png.size());
-        send_all(cfd, "\r\n", 2);
-        // Poll for a new request from the UI (non-blocking): if the client went
-        // away or wants new params, stop streaming.
-        fd_set rfds;
-        FD_ZERO(&rfds);
-        FD_SET(cfd, &rfds);
-        timeval tv{0, 0};
-        int ready = ::select(cfd + 1, &rfds, nullptr, nullptr, &tv);
-        if (ready > 0) {
-          char tmpbuf[4096];
-          ssize_t got = ::recv(cfd, tmpbuf, sizeof(tmpbuf), MSG_DONTWAIT);
-          if (got <= 0) break;
+      if (path == "/" || path == "/index.html") {
+        std::string html = read_file(s.base_dir + "/index.html");
+        if (html.empty())
+          html = "<html><body><h1>HairGenVulkan</h1><p>assets/web/index.html missing</p></body></html>";
+        send_text(cfd, "200 OK", "text/html; charset=utf-8", html);
+      } else if (path == "/style.css" || path == "/app.js") {
+        std::string content = read_file(s.base_dir + path);
+        send_text(cfd, "200 OK", path == "/style.css" ? "text/css" : "application/javascript", content);
+      } else if (path == "/params") {
+        {
+          std::lock_guard<std::mutex> lock(s.session.scene_mutex);
+          apply_params(s.session.scene, body);
         }
-        (void)dirty;
+        send_text(cfd, "200 OK", "application/json", "{\"ok\":true}");
+      } else if (path == "/scene") {
+        Scene scene;
+        {
+          std::lock_guard<std::mutex> lock(s.session.scene_mutex);
+          scene = s.session.scene;
+        }
+        char json[1024];
+        snprintf(json, sizeof(json),
+                 "{\"rot\":%.4f,\"tilt\":%.4f,\"dist\":%.4f,\"fuzz\":%.4f,"
+                 "\"clump\":%.4f,\"curl\":%.4f,\"width\":%d,\"height\":%d}",
+                 scene.camera.rot, scene.camera.tilt, scene.camera.dist, scene.hair.fuzz_amount,
+                 scene.hair.clump_percent, scene.hair.curl_amount, s.renderer.width(),
+                 s.renderer.height());
+        send_text(cfd, "200 OK", "application/json", json);
+      } else if (path == "/snapshot.png") {
+        std::vector<uint8_t> data = render_frame(s, false);
+        std::string h = http_headers("200 OK", "image/png", data.size());
+        send_all(cfd, h.data(), h.size());
+        send_all(cfd, data.data(), data.size());
+      } else if (path == "/stream") {
+        const char* head =
+            "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=hgenframe\r\n"
+            "Cache-Control: no-store\r\nConnection: close\r\n\r\n";
+        send_all(cfd, head, std::strlen(head));
+        ++s.session.live_streams;
+        while (true) {
+          std::vector<uint8_t> png = render_frame(s, true);
+          char part[192];
+          snprintf(part, sizeof(part),
+                   "--hgenframe\r\nContent-Type: image/png\r\nContent-Length: %zu\r\n\r\n",
+                   png.size());
+          send_all(cfd, part, std::strlen(part));
+          send_all(cfd, png.data(), png.size());
+          send_all(cfd, "\r\n", 2);
+          // Stop when the browser goes away.
+          fd_set rfds;
+          FD_ZERO(&rfds);
+          FD_SET(cfd, &rfds);
+          timeval tv{0, 0};
+          int ready = ::select(cfd + 1, &rfds, nullptr, nullptr, &tv);
+          if (ready > 0) {
+            char tmpbuf[4096];
+            ssize_t got = ::recv(cfd, tmpbuf, sizeof(tmpbuf), MSG_DONTWAIT);
+            if (got <= 0) break;
+          }
+        }
+        --s.session.live_streams;
+      } else {
+        send_text(cfd, "404 Not Found", "text/plain", "not found");
       }
       ::close(cfd);
-      continue;
-    }
-
-    const char* notfound = "not found";
-    std::string h = http_headers("404 Not Found", "text/plain", std::strlen(notfound));
-    send_all(cfd, h.data(), h.size());
-    send_all(cfd, notfound, std::strlen(notfound));
-    ::close(cfd);
+    }).detach();
   }
   return 0;
 }

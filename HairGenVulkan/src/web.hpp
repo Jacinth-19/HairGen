@@ -13,8 +13,9 @@ class WebServer {
   ~WebServer();
   int run();
 
+  struct Impl;  // defined in web.cpp
+
  private:
-  struct Impl;
   Impl* impl_;
 };
 
