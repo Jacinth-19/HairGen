@@ -166,9 +166,14 @@ void main() {
   // Aerial perspective. The sky probe is physically scaled now, so the fog is a
   // fraction of the horizon radiance rather than a fixed grey: it fades the
   // floor into the sky without bleaching it.
-  float haze = 1.0 - exp(-t * 0.030);
-  vec3 horizon = skyRadiance(normalize(vec3(dir.x, abs(dir.y) * 0.15 + 0.02, dir.z)));
-  color = mix(color, horizon * 0.34, haze * 0.85);
+  // The fade has to land *on* the sky, not on a fraction of it: the old
+  // `horizon * 0.34` left the far plane 3x darker than the sky above it, so the
+  // floor ended in a hard bright seam right at eye level (very visible through
+  // the semi-transparent hair). Converge to the sky radiance a few degrees above
+  // the horizon instead, which is what a real floor meets.
+  float haze = 1.0 - exp(-t * 0.020);
+  vec3 horizon = skyRadiance(normalize(vec3(dir.x, 0.055, dir.z))) * 0.88;
+  color = mix(color, horizon, haze * 0.97);
 
   outColor = vec4(color, 1.0);
 }

@@ -175,7 +175,10 @@ sRGB encode and triangular dithering.
 target), plus dithered tonemapping to kill sky banding. `--samples 1` for A/B.
 Strand ribbons use **alpha-to-coverage**: width tapers towards the tip and each
 strand carries a small random width/coverage, so the silhouette resolves soft
-instead of showing a polygon edge -- with no transparency sorting.
+instead of showing a polygon edge -- with no transparency sorting. The default
+ribbon width is **3.2 px**: thinner ribbons resolve individual fibres but at
+portrait framing the mass reads as spun sugar, while wider ones overlap into
+opaque locks. Every hairstyle preset carries its own width on top of that.
 
 **Camera.** Orbit camera (azimuth / elevation / distance / FOV) with mouse drag
 and wheel in the web panel, and `--anim orbit|sweep|light` for turntables.
