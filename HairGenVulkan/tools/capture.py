@@ -330,13 +330,18 @@ def main():
             delay = max(2, int(round(100.0 / args.fps)))
             print('[capture] GIF + WebP')
             gif = os.path.join(out, 'orbit.gif')
-            # Build the GIF with a shared palette and one optimised delta frame
-            # per image, so the file stays small enough to embed in a README.
+            # One palette shared by every frame, no per-frame delta encoding.
+            # `-layers Optimize` writes frames that differ from their neighbour
+            # only in the transparent index, and ImageMagick's optimiser then
+            # drops scattered single pixels to the *previous* frame's colour.
+            # Over a smooth sky gradient that shows up as a ragged white blob
+            # that is not in the rendered PNGs at all. The plain encoding is
+            # within 5% of the optimised size.
             run(['convert', '-delay', str(delay), '-loop', '0'] + pattern +
-                ['-colors', '256', '-layers', 'Optimize', '-dither', 'FloydSteinberg', gif])
+                ['-colors', '256', gif])
             try:
                 run(['convert', '-delay', str(delay), '-loop', '0'] + pattern +
-                    ['-colors', '256', '-quality', '82', '-define',
+                    ['-colors', '256', '-quality', '88', '-define',
                      'webp:method=4', os.path.join(out, 'orbit.webp')])
             except SystemExit:
                 pass
@@ -370,11 +375,10 @@ def main():
         if have('convert') and rpat:
             delay = max(2, int(round(100.0 / args.fps)))
             run(['convert', '-delay', str(delay), '-loop', '0'] + rpat +
-                ['-colors', '256', '-layers', 'Optimize', '-dither', 'FloydSteinberg',
-                 os.path.join(out, 'rain.gif')])
+                ['-colors', '256', os.path.join(out, 'rain.gif')])
             try:
                 run(['convert', '-delay', str(delay), '-loop', '0'] + rpat +
-                    ['-colors', '256', '-quality', '82', '-define', 'webp:method=4',
+                    ['-colors', '256', '-quality', '88', '-define', 'webp:method=4',
                      os.path.join(out, 'rain.webp')])
             except SystemExit:
                 pass
