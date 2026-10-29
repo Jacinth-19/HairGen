@@ -552,6 +552,7 @@ VkPipeline create_pipeline(Gpu& gpu, const PipelineDesc& desc) {
   ds.depthWriteEnable = desc.depth_write ? VK_TRUE : VK_FALSE;
   ds.depthCompareOp = desc.depth_op;
 
+  ms.alphaToCoverageEnable = desc.alpha_to_coverage ? VK_TRUE : VK_FALSE;
   VkPipelineColorBlendAttachmentState att{};
   att.blendEnable = desc.blend ? VK_TRUE : VK_FALSE;
   att.srcColorBlendFactor = desc.src_color;

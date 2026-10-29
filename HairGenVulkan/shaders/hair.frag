@@ -26,6 +26,7 @@ layout(location = 3) in vec3 vWorld;
 layout(location = 4) in float vW;
 layout(location = 5) flat in float vWMax;
 layout(location = 6) flat in int vInstance;
+layout(location = 7) in float vAlpha;
 
 layout(location = 0) out vec4 outColor;
 
@@ -102,8 +103,9 @@ void main() {
   // ---- tone ------------------------------------------------------------
   // Soft shoulder instead of a clip: the fibre radiance has a long tail.
   float l = luma(color);
-  color = color / (1.0 + 0.30 * max(l, 0.0));
+  color = color / (1.0 + 0.22 * max(l, 0.0));
   // Push saturation back after the dye + ambient mixing, which desaturate.
-  color = mix(vec3(luma(color)), color, 1.18);
-  outColor = vec4(max(color, vec3(0.0)), 1.0);
+  color = mix(vec3(luma(color)), color, 1.30);
+  // Alpha drives MSAA coverage (alpha-to-coverage), giving soft tips and edges.
+  outColor = vec4(max(color, vec3(0.0)), clamp(vAlpha, 0.02, 1.0));
 }

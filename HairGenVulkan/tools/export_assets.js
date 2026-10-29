@@ -550,7 +550,19 @@ for (let i = 0; i + 2 < strip.length; ++i) {
   // reaches r ~ 0.85 at y ~ -0.5 and is what tore the silhouette.
   const cut = process.env.HGEN_NECK_CUT !== undefined ? parseFloat(process.env.HGEN_NECK_CUT) : -0.30;
   const radius = process.env.HGEN_NECK_RADIUS !== undefined ? parseFloat(process.env.HGEN_NECK_RADIUS) : 0.45;
-  const keep = (i) => headPos[3 * i + 1] >= cut;  // flat cut; the pedestal covers it
+  // The scan includes a *hair shell* over the scalp: a large sheet that rises
+  // above the skull and folds forwards over the forehead. The demo is always
+  // seen with strands on top of it, so it never showed; here it pokes through
+  // the render as a pale flap. Drop geometry above the skull line -- the hair
+  // covers that region completely.
+  const scalpCut = process.env.HGEN_SCALP_CUT !== undefined ? parseFloat(process.env.HGEN_SCALP_CUT) : 10.0;
+  // ... and only towards the face: the back of the head is needed for the
+  // silhouette, and the hair shell there is inside the hair mass anyway.
+  const keep = (i) => {
+    const y = headPos[3 * i + 1];
+    if (y < cut) return false;
+    return y < scalpCut;
+  };
   const kept = [];
   let dropped = 0;
   for (let i = 0; i < headIdx.length; i += 3) {
@@ -705,13 +717,192 @@ for (let i = 0; i + 2 < strip.length; ++i) {
       const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
       for (const v of [ia, ib, ic]) { const g = groupOf[v]; acc[3 * g] += nx; acc[3 * g + 1] += ny; acc[3 * g + 2] += nz; }
     }
+    // Laplacian smoothing of the *normal field* over the welded-group adjacency
+    // graph. Averaging per-vertex face normals still leaves the shading normal
+    // jumping between neighbouring groups on this scan (many groups are tiny and
+    // sit on a crease), which shows up as flat faceted patches. A few passes over
+    // the graph produces the smooth field a retopologised head would have.
+    let degenerate = 0;
+    const nrmPasses = process.env.HGEN_NRM_SMOOTH !== undefined ? parseInt(process.env.HGEN_NRM_SMOOTH, 10) : 6;
+    const groupCount = weldId.size;
+    const gnorm = new Float64Array(groupCount * 3);
+    for (let g = 0; g < groupCount; ++g) {
+      let nx = 0, ny = 0, nz = 0;
+      for (let i = 0; i < nv; ++i) if (groupOf[i] === g) { nx += acc[3 * g]; break; }
+      gnorm[3 * g] = acc[3 * g]; gnorm[3 * g + 1] = acc[3 * g + 1]; gnorm[3 * g + 2] = acc[3 * g + 2];
+    }
+    {
+      const norm = (g) => {
+        const len = Math.hypot(gnorm[3 * g], gnorm[3 * g + 1], gnorm[3 * g + 2]) || 1;
+        gnorm[3 * g] /= len; gnorm[3 * g + 1] /= len; gnorm[3 * g + 2] /= len;
+      };
+      // Groups whose face normals cancel out (a pinch in the scan) would
+      // normalise to zero, and normalize(0) is NaN in the shader -- which is
+      // exactly the hard-edged black wedges that were left on the forehead.
+      // Give them the direction from the head's centroid, which is always usable.
+      for (let g = 0; g < groupCount; ++g) {
+        if (Math.hypot(gnorm[3 * g], gnorm[3 * g + 1], gnorm[3 * g + 2]) < 1e-9) {
+          let sx = 0, sy = 0, sz = 0, n = 0;
+          for (let i = 0; i < nv; ++i)
+            if (groupOf[i] === g) { sx += headPos[3 * i]; sy += headPos[3 * i + 1]; sz += headPos[3 * i + 2]; n++; }
+          if (n) {
+            gnorm[3 * g] = sx / n - cx3; gnorm[3 * g + 1] = sy / n - cy3; gnorm[3 * g + 2] = sz / n - cz3;
+          } else {
+            gnorm[3 * g + 1] = 1;
+          }
+          degenerate++;
+        }
+      }
+      for (let g = 0; g < groupCount; ++g) norm(g);
+      const adj = new Map();  // group -> Set of neighbouring groups
+      const link = (a, b) => {
+        let s = adj.get(a);
+        if (!s) adj.set(a, (s = new Set()));
+        s.add(b);
+      };
+      for (let t = 0; t < triCount; ++t) {
+        const g0 = groupOf[headIdx[3 * t]], g1 = groupOf[headIdx[3 * t + 1]], g2 = groupOf[headIdx[3 * t + 2]];
+        if (g0 !== g1) { link(g0, g1); link(g1, g0); }
+        if (g1 !== g2) { link(g1, g2); link(g2, g1); }
+        if (g2 !== g0) { link(g2, g0); link(g0, g2); }
+      }
+      const tmp = new Float64Array(groupCount * 3);
+      for (let pass = 0; pass < nrmPasses; ++pass) {
+        tmp.set(gnorm);
+        for (const [g, set] of adj) {
+          let nx = gnorm[3 * g] * 1.0, ny = gnorm[3 * g + 1], nz = gnorm[3 * g + 2];
+          let n = 1;
+          for (const o of set) { nx += tmp[3 * o]; ny += tmp[3 * o + 1]; nz += tmp[3 * o + 2]; n++; }
+          gnorm[3 * g] = nx; gnorm[3 * g + 1] = ny; gnorm[3 * g + 2] = nz;
+        }
+        for (let g = 0; g < groupCount; ++g) norm(g);
+      }
+    }
+    // Left/right symmetry. The scan is a mirrored strip, so geometry near the
+    // centreline is doubled and its two halves carry slightly different
+    // normals -- that drew a shaded seam straight down the face. Averaging each
+    // vertex's normal with its mirror partner (found by a position lookup)
+    // removes the seam everywhere the surface is symmetric and leaves the rest
+    // alone.
+    {
+      const byPos = new Map();
+      for (let i = 0; i < nv; ++i) {
+        const k = `${groupOf[i]}`;
+        if (!byPos.has(k)) byPos.set(k, i);
+      }
+      const mirrorOf = new Int32Array(nv).fill(-1);
+      for (let i = 0; i < nv; ++i) {
+        const k = `${Math.round(-headPos[3 * i] * q)}_${Math.round(headPos[3 * i + 1] * q)}_${Math.round(headPos[3 * i + 2] * q)}`;
+        const j = weldId.get(k);
+        if (j !== undefined) mirrorOf[i] = j;
+      }
+      const gmirror = new Int32Array(groupCount).fill(-1);
+      for (let i = 0; i < nv; ++i)
+        if (mirrorOf[i] >= 0) gmirror[groupOf[i]] = groupOf[mirrorOf[i]];
+      const tmpN = Float64Array.from(gnorm);
+      let paired = 0;
+      for (let g = 0; g < groupCount; ++g) {
+        const m = gmirror[g];
+        if (m < 0 || m === g) continue;
+        // Mirror x, average with the partner.
+        const mx = -tmpN[3 * m], my = tmpN[3 * m + 1], mz = tmpN[3 * m + 2];
+        let nx = tmpN[3 * g] * 0.5 + mx * 0.5;
+        let ny = tmpN[3 * g + 1] * 0.5 + my * 0.5;
+        let nz = tmpN[3 * g + 2] * 0.5 + mz * 0.5;
+        const len = Math.hypot(nx, ny, nz) || 1;
+        gnorm[3 * g] = nx / len; gnorm[3 * g + 1] = ny / len; gnorm[3 * g + 2] = nz / len;
+        paired++;
+      }
+      console.log(`  normals: mirrored ${paired} groups`);
+    }
     for (let i = 0; i < nv; ++i) {
       const g = groupOf[i];
-      const nx = acc[3 * g], ny = acc[3 * g + 1], nz = acc[3 * g + 2];
-      const len = Math.hypot(nx, ny, nz) || 1;
-      headNrm[3 * i] = nx / len; headNrm[3 * i + 1] = ny / len; headNrm[3 * i + 2] = nz / len;
+      headNrm[3 * i] = gnorm[3 * g];
+      headNrm[3 * i + 1] = gnorm[3 * g + 1];
+      headNrm[3 * i + 2] = gnorm[3 * g + 2];
     }
-    console.log(`  normals: ${triCount} tris, ${weldId.size} welded verts, ${flipped} flipped outwards`);
+
+    // Local sign repair. The BFS above fixes winding per *connected* region, but
+    // where the strip folds back on itself the fold can inherit the opposite
+    // sign, and two overlapping sheets then shade as one bright sheet against
+    // one dark one -- the hard vertical seam on the face. Compare each vertex
+    // normal against the outward direction of a fitted head ellipsoid and flip
+    // the ones that clearly point into the head.
+    {
+      const c = [0, 0.02, -0.06], r = [0.46, 0.66, 0.52];
+      let flippedN = 0;
+      for (let i = 0; i < nv; ++i) {
+        const qx = (headPos[3 * i] - c[0]) / r[0];
+        const qy = (headPos[3 * i + 1] - c[1]) / r[1];
+        const qz = (headPos[3 * i + 2] - c[2]) / r[2];
+        let ex = qx / r[0], ey = qy / r[1], ez = qz / r[2];
+        const el = Math.hypot(ex, ey, ez) || 1;
+        ex /= el; ey /= el; ez /= el;
+        const d = headNrm[3 * i] * ex + headNrm[3 * i + 1] * ey + headNrm[3 * i + 2] * ez;
+        if (d < -0.15) {
+          headNrm[3 * i] = -headNrm[3 * i];
+          headNrm[3 * i + 1] = -headNrm[3 * i + 1];
+          headNrm[3 * i + 2] = -headNrm[3 * i + 2];
+          flippedN++;
+        }
+      }
+      console.log(`  normals: repaired ${flippedN} inward-facing vertex normals`);
+    }
+
+    // Spatial blur of the normal field. Graph smoothing only propagates along
+    // the strip's own connectivity, so two *overlapping sheets* of the scan (the
+    // fold down the centre of the face) keep different normals and shade as a
+    // hard seam. Averaging over a small world-space neighbourhood makes
+    // co-located surfaces agree regardless of topology, which is exactly what a
+    // single smooth surface would do.
+    {
+      const RADIUS = process.env.HGEN_NRM_BLUR !== undefined ? parseFloat(process.env.HGEN_NRM_BLUR) : 0.09;
+      const cell = RADIUS;
+      const grid = new Map();
+      const key = (x, y, z) => `${Math.floor(x / cell)}_${Math.floor(y / cell)}_${Math.floor(z / cell)}`;
+      for (let i = 0; i < nv; ++i) {
+        const k = key(headPos[3 * i], headPos[3 * i + 1], headPos[3 * i + 2]);
+        let list = grid.get(k);
+        if (!list) grid.set(k, (list = []));
+        list.push(i);
+      }
+      const out = new Float32Array(headNrm.length);
+      const r2 = RADIUS * RADIUS;
+      for (let i = 0; i < nv; ++i) {
+        const x = headPos[3 * i], y = headPos[3 * i + 1], z = headPos[3 * i + 2];
+        const bx = Math.floor(x / cell), by = Math.floor(y / cell), bz = Math.floor(z / cell);
+        let nx = 0, ny = 0, nz = 0, wsum = 0;
+        for (let dx = -1; dx <= 1; ++dx)
+          for (let dy = -1; dy <= 1; ++dy)
+            for (let dz = -1; dz <= 1; ++dz) {
+              const list = grid.get(`${bx + dx}_${by + dy}_${bz + dz}`);
+              if (!list) continue;
+              for (const j of list) {
+                const ddx = headPos[3 * j] - x, ddy = headPos[3 * j + 1] - y, ddz = headPos[3 * j + 2] - z;
+                const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+                if (d2 > r2) continue;
+                // Gaussian falloff, and weight by agreement with the centre
+                // vertex so genuine edges (nose, lips) are not melted.
+                const w = Math.exp(-d2 / (r2 * 0.35));
+                const agree = Math.max(0, headNrm[3 * i] * headNrm[3 * j] +
+                  headNrm[3 * i + 1] * headNrm[3 * j + 1] + headNrm[3 * i + 2] * headNrm[3 * j + 2]);
+                const ww = w * (0.25 + 0.75 * agree);
+                nx += headNrm[3 * j] * ww; ny += headNrm[3 * j + 1] * ww; nz += headNrm[3 * j + 2] * ww;
+                wsum += ww;
+              }
+            }
+        if (wsum > 0) {
+          const len = Math.hypot(nx, ny, nz) || 1;
+          out[3 * i] = nx / len; out[3 * i + 1] = ny / len; out[3 * i + 2] = nz / len;
+        } else {
+          out[3 * i] = headNrm[3 * i]; out[3 * i + 1] = headNrm[3 * i + 1]; out[3 * i + 2] = headNrm[3 * i + 2];
+        }
+      }
+      headNrm.set(out);
+      console.log(`  normals: spatial blur r=${RADIUS}`);
+    }
+    console.log(`  normals: ${triCount} tris, ${weldId.size} welded verts, ${flipped} flipped outwards, ` +
+                `${nrmPasses} smoothing passes, ${degenerate} degenerate groups repaired`);
   }
 
   if (process.env.HGEN_ORIGINAL_NORMALS) {
@@ -915,21 +1106,91 @@ const materialLutPath = (name, f) => {
   throw new Error(`lookup table not found for material ${name}: ${f}`);
 };
 
+// --- LUT materials --------------------------------------------------------
+// `std_blond` is the demo checkout's root PNGs and defines the lookup tables'
+// angular structure. The `materials/rosa` PNGs were authored by recolouring
+// them, which shifted their *brightness* as well as their hue: the rosa N_TRT
+// table is ~5x brighter than the blond one, so the TRT lobe swamps R and TT and
+// the whole head flattens into one pink mass with no fibre structure.
+//
+// Re-derive every table so it keeps the blond set's per-texel luminance (the
+// scattering structure, which is physically what those tables encode) and takes
+// only its *chroma* from the supplied rosa set. Multiple-scattering tables are
+// desaturated, because light that has bounced many times inside the fibre loses
+// its chromatic memory.
+function chroma(r, g, b) {
+  const m = Math.max(r, g, b, 1e-3);
+  return [r / m, g / m, b / m];
+}
+function meanLuma(data, comps, channels) {
+  let acc = 0;
+  const n = data.length / comps;
+  for (let i = 0; i < n; ++i) {
+    const o = i * comps;
+    acc += 0.2126 * data[o] + 0.7152 * data[o + 1] + 0.0722 * data[o + 2];
+  }
+  return acc / Math.max(1, channels);
+}
+function recolorTable(base, tint, comps, desaturate) {
+  // `base` supplies structure, `tint` supplies hue.
+  const out = Uint8Array.from(base.data);
+  const baseLuma = [], tintLuma = [];
+  const n = base.data.length / comps;
+  // Reference chroma per table = the tint's own mean chroma; using the mean
+  // rather than per-texel ratios keeps the base's angular variation intact.
+  let tr = 0, tg = 0, tb = 0;
+  for (let i = 0; i < n; ++i) {
+    const o = i * comps;
+    const c = chroma(tint.data[o], tint.data[o + 1], tint.data[o + 2]);
+    tr += c[0]; tg += c[1]; tb += c[2];
+  }
+  tr /= n; tg /= n; tb /= n;
+  let br = 0, bg = 0, bb = 0;
+  for (let i = 0; i < n; ++i) {
+    const o = i * comps;
+    const c = chroma(base.data[o], base.data[o + 1], base.data[o + 2]);
+    br += c[0]; bg += c[1]; bb += c[2];
+  }
+  br /= n; bg /= n; bb /= n;
+  const ratio = [tr / Math.max(br, 1e-3), tg / Math.max(bg, 1e-3), tb / Math.max(bb, 1e-3)]
+    .map((x) => 1 + (Math.min(4, Math.max(0.25, x)) - 1) * (1 - desaturate));
+  for (let i = 0; i < n; ++i) {
+    const o = i * comps;
+    if (comps >= 3) {
+      out[o] = Math.min(255, Math.round(base.data[o] * ratio[0]));
+      out[o + 1] = Math.min(255, Math.round(base.data[o + 1] * ratio[1]));
+      out[o + 2] = Math.min(255, Math.round(base.data[o + 2] * ratio[2]));
+    }
+    if (comps === 4) out[o + 3] = base.data[o + 3];  // N_R alpha stays scalar
+  }
+  return { w: base.w, h: base.h, d: base.d, data: out };
+}
+
+// name, luminance-preserving? , desaturation of the chroma transfer
+const LUT_SPEC = [
+  ['N_TT_R', 4, 2, 0.0],
+  ['N_TRT', 3, 2, 0.0],
+  ['N_TT_R_GI', 4, 2, 0.35],
+  ['N_TRT_GI', 3, 2, 0.35],
+  ['GI', 3, 3, 0.55],
+  ['M_GI', 3, 2, 0.35],
+];
+
 for (const mat of MATERIALS) {
   const tag = `mtl.${mat}.`;
-  const nttr = lut(materialLutPath(mat, 'N_TT_R.png'), 4, 2);
-  addChunk(tag + 'N_TT_R', nttr.w, nttr.h, 1, 4, 0, u8(nttr.data));
-  const ntrt = lut(materialLutPath(mat, 'N_TRT.png'), 3, 2);
-  addChunk(tag + 'N_TRT', ntrt.w, ntrt.h, 1, 3, 0, u8(ntrt.data));
-  const nttrgi = lut(materialLutPath(mat, 'N_TT_R_GI.png'), 4, 2);
-  addChunk(tag + 'N_TT_R_GI', nttrgi.w, nttrgi.h, 1, 4, 0, u8(nttrgi.data));
-  const ntrtgi = lut(materialLutPath(mat, 'N_TRT_GI.png'), 3, 2);
-  addChunk(tag + 'N_TRT_GI', ntrtgi.w, ntrtgi.h, 1, 3, 0, u8(ntrtgi.data));
-  const gi = lut(materialLutPath(mat, 'GI.png'), 3, 3);
-  addChunk(tag + 'GI', gi.w, gi.h, gi.d, 3, 0, u8(gi.data));
-  const mgi = lut(materialLutPath(mat, 'M_GI.png'), 3, 2);
-  addChunk(tag + 'M_GI', mgi.w, mgi.h, 1, 3, 0, u8(mgi.data));
-  console.log(`  material ${mat}: LUTs ${nttr.w}², GI ${gi.w}³, M_GI ${mgi.w}²`);
+  const ref = mat !== 'std_blond';   // every non-blond set is derived from blond
+  for (const [lutName, comps, dim, desat] of LUT_SPEC) {
+    const base = lut(materialLutPath('std_blond', lutName + '.png'), comps, dim);
+    let table = base;
+    if (ref) {
+      const tint = lut(materialLutPath(mat, lutName + '.png'), comps, dim);
+      table = recolorTable(base, tint, comps, desat);
+    }
+    addChunk(tag + lutName, table.w, table.h, table.d, comps, 0, u8(table.data));
+  }
+  const probe = lut(materialLutPath(mat, 'N_TT_R.png'), 4, 2);
+  console.log(`  material ${mat}: LUTs ${probe.w}², GI ${lut(materialLutPath(mat, 'GI.png'), 3, 3).w}³` +
+              (ref ? ' (re-derived: blond structure, supplied hue)' : ''));
 }
 // The material table so the runtime does not have to hard-code the names.
 const matNames = MATERIALS.map((m) => m + '\0').join('') + '\0';

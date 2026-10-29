@@ -27,7 +27,9 @@ void main() {
   vec3 spread;
   vec3 trans = shadowTransmittance(spread, directF, pLight, bias);
 
-  const vec3 albedo = vec3(0.055, 0.058, 0.068);
+  // Polished dark stone rather than matte black: it picks up the sky and the
+  // key light so the bust reads as sitting on something, not floating.
+  const vec3 albedo = vec3(0.085, 0.090, 0.105);
   vec3 sunColor = vec3(1.0, 0.95, 0.89) * frame.skyRef.x * 1.5;
 
   // Direct + the hair shadow that falls across the pedestal.
@@ -37,8 +39,8 @@ void main() {
 
   // Soft sheen so the silhouette reads against the background.
   vec3 h = normalize(w_o + sunDir);
-  float sheen = pow(max(dot(n, h), 0.0), 24.0) * 0.05;
-  float rim = pow(1.0 - max(dot(n, w_o), 0.0), 3.0) * 0.12;
+  float sheen = pow(max(dot(n, h), 0.0), 48.0) * 0.12;
+  float rim = pow(1.0 - max(dot(n, w_o), 0.0), 2.5) * 0.10;
 
   vec3 color = (direct + ambient) * albedo + spread * sunColor * 0.05 + sheen + rim * albedo * 8.0;
   outColor = vec4(color, 1.0);

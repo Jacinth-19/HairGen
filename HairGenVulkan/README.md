@@ -54,6 +54,13 @@ jitter, clump targets from a 256² clump-centre map, kink / curl / frizz / fuzz
 displacement in the hair-mesh surface frame, ribbon expansion in screen space
 and a length-variation cut-off.
 
+**Pink by default.** The start-up look is the supplied **rosa** LUT set (not
+blond): `materials/rosa/*` are re-derived on export so they keep the blond
+tables' per-texel luminance -- their scattering structure -- and take only their
+chroma from the supplied set. The supplied rosa PNGs are ~5x brighter in N_TRT
+than the blond ones; using them raw swamped the R and TT lobes and flattened the
+whole head into one pink mass. Blond is still one dropdown away.
+
 **Hair dye.** The fibre lookup tables bake in one hair colour, so a dye is a
 *chromatic* remap of the scattered radiance: the target colour is normalised by
 its brightest channel (absorption semantics - a dye can only subtract light) and
@@ -69,6 +76,19 @@ Marschner tables so the fibres keep a glossy band.
 `afro`, `pixie`, `long`, `punk`. Each is a full set of fuzz / frizz / kink /
 clump / curl operator values - the "author many styles from one hair mesh by
 stacking procedural operators" idea from the SIGGRAPH'24 hair-mesh paper.
+
+**Artifact fixes on the scanned bust.** The head is a torn, overlapping
+triangle strip, and most of what looked ugly came from that:
+normal orientation is now solved per *connected region* (BFS over the welded
+edge graph, one global sign), inward normals are repaired against a fitted head
+ellipsoid, the normal field is smoothed both over the mesh graph and
+*spatially* (a small world-space blur, so co-located sheets of the fold agree
+instead of shading as a hard seam), zero-length normals are repaired (they
+normalised to NaN and rendered as black wedges), and the head no longer casts a
+self-shadow. On the shading side the diffuse uses a wide wrap term, the scalp is
+darkened under the hair, and UVs are mirrored back into the island instead of
+`fract()`-wrapped (wrapping sampled the far side of the photo, which drew a
+tonal seam down the face).
 
 **Skin detail.** The supplied head maps (`normal`, `height`, `ao`, `specular`)
 are wired into `head.frag`: a TBN built from UV gradients (the mesh carries no
@@ -96,6 +116,9 @@ sRGB encode and triangular dithering.
 
 **Anti-aliasing.** 4× MSAA on the scene pass (resolve into a sampled HDR
 target), plus dithered tonemapping to kill sky banding. `--samples 1` for A/B.
+Strand ribbons use **alpha-to-coverage**: width tapers towards the tip and each
+strand carries a small random width/coverage, so the silhouette resolves soft
+instead of showing a polygon edge -- with no transparency sorting.
 
 **Camera.** Orbit camera (azimuth / elevation / distance / FOV) with mouse drag
 and wheel in the web panel, and `--anim orbit|sweep|light` for turntables.

@@ -197,6 +197,8 @@ int main(int argc, char** argv) {
         scene.hair.a_f[0] = 0.68f; scene.hair.a_f[1] = 0.36f; scene.hair.a_f[2] = 0.42f;
       } else if (s == "blond" || s == "std_blond") {
         scene.hair.material = 0;
+        scene.hair.a_f[0] = 0.507475266f; scene.hair.a_f[1] = 0.465571405f;
+        scene.hair.a_f[2] = 0.394347166f;
       } else {
         std::fprintf(stderr, "unknown material: %s\n", s.c_str());
         std::exit(2);

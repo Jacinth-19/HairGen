@@ -16,15 +16,15 @@ const GROUPS = [
   {
     title: 'Hair',
     params: [
-      { id: 'density', name: 'shadows', min: 0.1, max: 100, step: 0.1, value: 1, log: true },
+      { id: 'density', name: 'shadows', min: 0.1, max: 100, step: 0.1, value: 2.5, log: true },
       { id: 'lengthVar', name: 'length var.', min: 0, max: 1, step: 0.01, value: 0.1 },
-      { id: 'widthPx', name: 'width', min: 0.5, max: 4, step: 0.1, value: 1.6 },
+      { id: 'widthPx', name: 'width', min: 0.5, max: 4, step: 0.1, value: 1.9 },
     ],
   },
   {
     title: 'Fuzz',
     params: [
-      { id: 'fuzz', name: 'amount', min: 0, max: 0.2, step: 0.005, value: 0.1 },
+      { id: 'fuzz', name: 'amount', min: 0, max: 0.2, step: 0.005, value: 0.06 },
       { id: 'fuzzDistrib', name: 'distribution', min: 0, max: 1, step: 0.01, value: 0.8 },
       { id: 'fuzzExp', name: 'exp.', min: 0, max: 4, step: 0.05, value: 0 },
     ],
@@ -243,7 +243,8 @@ function wireSimpleInputs() {
       state.style = style.value;
       // rosa ships its own Marschner lookup tables; everything else reuses the
       // demo's std_blond set and only changes the absorption preset.
-      state.material = style.value === 'rosa' ? 1 : 0;
+      // rosa (the default) has its own LUT set; the blond presets share one.
+      state.material = (style.value === 'rosa' || style.value === 'brown') ? 1 : 0;
       queueUpdate();
     });
     state.style = style.value;

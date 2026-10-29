@@ -98,6 +98,7 @@ struct PipelineDesc {
   VkSampleCountFlagBits sample_count = VK_SAMPLE_COUNT_1_BIT;
   uint32_t color_attachments = 1;  // 0 for depth-only passes
   bool blend = false;
+  bool alpha_to_coverage = false;
   VkBlendFactor src_color = VK_BLEND_FACTOR_SRC_ALPHA;
   VkBlendFactor dst_color = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
   std::vector<VkVertexInputBindingDescription> vertex_bindings;

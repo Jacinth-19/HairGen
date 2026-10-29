@@ -35,6 +35,7 @@ layout(location = 3) out vec3 vWorld;
 layout(location = 4) out float vW;
 layout(location = 5) flat out float vWMax;
 layout(location = 6) flat out int vInstance;
+layout(location = 7) out float vAlpha;   // coverage, used with alpha-to-coverage
 
 float Rand(int n, int seed) {
   n = (n << 13) ^ (n + seed);
@@ -197,13 +198,26 @@ void main() {
     vW = w;
     vWMax = 1.0 - frame.hair0.y * Rand(gl_InstanceIndex, 5);
     vInstance = gl_InstanceIndex;
+    vAlpha = 1.0;
     return;
   }
 
-  // Expand into a screen-space ribbon.
+  // Expand into a screen-space ribbon. The half-width tapers towards the tip so
+  // strands end in a point instead of a blunt cut, and each strand gets a small
+  // random width so the mass does not read as one solid sheet.
+  float wMax = 1.0 - frame.hair0.y * Rand(gl_InstanceIndex, 5);
+  float along = clamp(w / max(wMax, 1e-3), 0.0, 1.0);
+  float taper = mix(1.0, 0.18, smoothstep(0.55, 1.0, along));
+  float widthJitter = mix(0.65, 1.25, Rand(gl_InstanceIndex, 6));
   vec3 tangentView = (mv * vec4(t, 0.0)).xyz;
   vec2 b = normalize(vec2(-tangentView.y, tangentView.x) + vec2(1e-8));
-  glpos.xy += b * inTexW.z * glpos.w;
+  glpos.xy += b * inTexW.z * glpos.w * taper * widthJitter;
+
+  // Alpha-to-coverage: a strand covers fewer MSAA samples where it is thin and
+  // near its cut. This is what gives the silhouette soft, hair-like edges
+  // instead of a polygon boundary, and it needs no sorting.
+  float strandVar = mix(0.55, 1.0, Rand(gl_InstanceIndex, 7));
+  vAlpha = strandVar * mix(1.0, 0.25, smoothstep(0.80, 1.0, along)) * mix(0.55, 1.0, taper);
 
   gl_Position = glpos;
   vViewPos = mv * vec4(p, 1.0);
@@ -211,6 +225,6 @@ void main() {
   vLightPos = (frame.lightView * vec4(p, 1.0)).xyz;
   vWorld = p;
   vW = w;
-  vWMax = 1.0 - frame.hair0.y * Rand(gl_InstanceIndex, 5);
+  vWMax = wMax;
   vInstance = gl_InstanceIndex;
 }

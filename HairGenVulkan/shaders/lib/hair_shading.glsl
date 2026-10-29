@@ -20,7 +20,7 @@
 // The demo multiplies by 5 and takes a sqrt() for a display-referred target.
 // Here the frame target is linear HDR, so the scale is folded into the
 // exposure and the value stays in radiance units.
-#define REAL_INTENSITY 2.4
+#define REAL_INTENSITY 1.35
 
 float Rand(int n, int seed) {
   n = (n << 13) ^ (n + seed);

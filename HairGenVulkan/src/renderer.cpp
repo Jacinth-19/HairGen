@@ -948,6 +948,9 @@ void Renderer::create_pipelines() {
     p.cull = VK_CULL_MODE_NONE;
     // The ribbon vertices are emitted two-per-segment, so they form a strip.
     p.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+    // Alpha-to-coverage turns the fragment alpha into an MSAA coverage mask, so
+    // tapered strand tips resolve softly without transparency sorting.
+    p.alpha_to_coverage = true;
     p_hair_ = create_pipeline(gpu_, p);
   }
   // object shadow

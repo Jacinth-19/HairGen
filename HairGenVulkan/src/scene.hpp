@@ -35,28 +35,31 @@ struct HairSettings {
   // one that matters, so by default the head does not cast.
   bool head_casts_shadow = false;            // push strands out of the july_colliders.js spheres
 
-  float density = 1.0f;       // shadow density ("shadows" slider)
-  float length_var = 0.1f;
+  float density = 2.5f;       // shadow density ("shadows" slider)
+  float length_var = 0.10f;
 
-  float fuzz_amount = 0.10f, fuzz_distrib = 0.80f, fuzz_exp = 0.0f;
+  float fuzz_amount = 0.06f, fuzz_distrib = 0.80f, fuzz_exp = 0.0f;
   float frizz_amount = 0.02f, frizz_freq = 1.0f, frizz_exp = 0.0f;
   float kink_amount = 0.02f, kink_freq_uv = 2.0f, kink_freq_w = 1.0f, kink_w_scale = 0.5f, kink_exp = 0.0f;
   float clump_percent = 0.90f, clump_size = 0.0f, clump_noise = 1.0f, clump_freq = 1.0f, clump_var = 0.1f,
         clump_exp = 0.0f;
   float curl_amount = 0.02f, curl_freq = 1.0f, curl_twists = 10.0f, curl_twist_exp = 0.3f, curl_exp = 0.0f;
 
-  float width_px = 1.2f;   // ribbon width in pixels
-  int hair_count = 20000;
+  float width_px = 1.9f;   // ribbon width in pixels
+  int hair_count = 34000;
   int segments = 32;
 
   // Fiber (Marschner) parameters - the demo's material LUTs are tuned for these.
-  float a_f[3] = {0.507475266f, 0.465571405f, 0.394347166f};
+  // Defaults are the *rosa* set (see below): the demo's blond tables are still
+  // shipped and selectable, but the render starts pink.
+  float a_f[3] = {0.68f, 0.36f, 0.42f};
   float r_dev = 8.0f, tt_dev = 10.0f, trt_dev = 15.0f;
   float ambient = 0.20f;
 
   // Index into the asset bundle's material list (0 = std_blond, 1 = rosa).
   // Selects the Marschner lookup tables *and* the absorption preset.
-  int material = 0;
+  // Rosa is the default: the blond tables are kept selectable, not the start.
+  int material = 1;
 
   // ---- hair dye -------------------------------------------------------
   // The LUTs bake one fibre's absorption, so recolouring them means tinting the
