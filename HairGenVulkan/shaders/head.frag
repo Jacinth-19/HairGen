@@ -57,7 +57,7 @@ void main() {
       // full strength it sparkles under the sun. Keep the low frequencies and
       // damp the tangents so the relief reads as skin, not gravel.
       vec3 nt = textureGrad(skinNormal, uv, duvdx, duvdy).xyz * 2.0 - 1.0;
-      nt.xy *= 0.18;
+      nt.xy *= 0.35;
       vec3 mapped = normalize(mat3(t, b, n) * normalize(nt));
       n = normalize(mix(n, mapped, 0.55));
     }
@@ -80,7 +80,7 @@ void main() {
   // brings its own normal, and at sheet boundaries that shows up as patchwork.
   // Leaning the shading normal towards the view direction (a soft, portrait-like
   // wrap) makes neighbouring sheets shade alike, so the seams stop reading.
-  n = normalize(mix(n, w_o, 0.75));
+  n = normalize(mix(n, w_o, 0.12));
 
   // The remaining hard wedges are the bust's overlapping sheets: where the scan
   // folds over itself the winning sheet carries a normal pointing into the fold
@@ -95,39 +95,27 @@ void main() {
     vec3 en = normalize(q / kRadii);
     if (dot(en, w_o) < 0.0) en = -en;
     float smoothness = smoothstep(-0.85, -0.15, dot(n, en));  // only severely disagreeing normals
-    n = normalize(mix(n, en, 0.75 * smoothness));
+    n = normalize(mix(n, en, 0.25 * smoothness));
   }
 
 
   // The source mesh's UVs run outside [0,1] (u up to 1.2, v down to -1.5); the
   // demo's WebGL sampler wrapped them, so `uv` was wrapped above.
-  vec3 albedo = textureGrad(skinAlbedo, uv, duvdx, duvdy).rgb;
-  // The photo albedo is quite red and carries its own baked shading; pull it
-  // towards neutral and lift the shadows so the face is not a dark mask inside
-  // the hair.
-  // De-light: the photo carries its own baked shading, so dividing by its
-  // low-frequency copy leaves a flat albedo that our lighting can shape.
-  vec3 lowFreq = max(textureGrad(skinFlat, uv, duvdx, duvdy).rgb, vec3(0.10));
-  vec3 detail = clamp(albedo / lowFreq, vec3(0.0), vec3(1.7));
-  // The photo's remaining dark patches are painted hair shadow around the
-  // temples and ears; keep only a fraction of the texture detail so they do
-  // not read as holes in the skin.
-  detail = mix(detail, vec3(luma(detail)), 0.22);
-  // The photo's painted hair shadow sits inside the UV island, so dividing it
-  // out amplifies it. Keep only a narrow band of texture detail: enough for
-  // pores and lip colour, not enough to paint blotches on the forehead.
-  // A 0.72..1.30 clamp is almost 2x between its ends, so the photo's remaining
-  // shading variation (and its UV-island seams) survived as tonal bands across
-  // the face. Keep the range narrow and the amount small: this term is only
-  // meant to carry pores, lip colour and the faint brow/nose reddening.
-  detail = clamp(detail, vec3(0.80), vec3(1.25));
-  detail = mix(vec3(1.0), detail, 0.70);
-  // Base skin tone from the demo photo, with the photograph's own lighting
-  // divided out, so the shading here is ours.
-  const vec3 kSkin = vec3(0.80, 0.62, 0.53);
-  albedo = kSkin * detail * 1.20;
-  albedo = pow(max(albedo, vec3(0.0)), vec3(2.2));
-  albedo = max(albedo, vec3(0.045));
+  vec3 photo = textureGrad(skinAlbedo, uv, duvdx, duvdy).rgb;
+  // The photo is display-referred (sRGB), so decode once into linear before it
+  // is used as an albedo. Double-decoding made the face milky and flat; not
+  // decoding at all made it terracotta.
+  vec3 albedo = pow(max(photo, vec3(0.0)), vec3(2.2));
+  // The photo carries its own soft frontal lighting. Divide out the low
+  // frequency so our sun and sky shape the form, then put back a measured
+  // linear skin level so the level stays in range under the scaled sun.
+  vec3 lowFreq = pow(max(textureGrad(skinFlat, uv, duvdx, duvdy).rgb, vec3(0.06)), vec3(2.2));
+  albedo = albedo / max(lowFreq, vec3(0.02)) * vec3(0.30, 0.185, 0.145);
+  albedo = clamp(albedo, vec3(0.02), vec3(0.95));
+  // A touch of the photo's own hue survives in the lips, brows and shadow.
+  albedo = mix(albedo, pow(max(photo, vec3(0.0)), vec3(2.2)) * 1.6, 0.35);
+  // Skin scatters red; nudge the ratio slightly warm without going terracotta.
+  albedo = mix(albedo, vec3(luma(albedo)) * vec3(1.05, 1.0, 0.95), 0.12);
 
   // Scalp under the hair. The guide mesh leaves a gap above the hairline, and
   // a lit scalp showing through strands is one of the things that read as a
@@ -135,7 +123,7 @@ void main() {
   // occlusion, so darken smoothly above the brow.
   // Only well above the brow (y > 0.55): the forehead has to stay lit because
   // the guide mesh leaves gaps in the strand coverage at the hairline.
-  float scalp = smoothstep(0.55, 0.72, vWorld.y);
+  float scalp = smoothstep(0.60, 1.15, vWorld.y);
   albedo *= mix(1.0, 0.30, scalp);
 
   // Debug taps for the detail maps (dbg 11/12/13 == ao / spec / normal).
@@ -143,6 +131,19 @@ void main() {
   if (frame.misc.z > 11.5 && frame.misc.z < 12.5) { outColor = vec4(vec3(textureGrad(skinSpec, uv, duvdx, duvdy).r), 1.0); return; }
   if (frame.misc.z > 12.5 && frame.misc.z < 13.5) { outColor = vec4(textureGrad(skinNormal, uv, duvdx, duvdy).xyz, 1.0); return; }
   if (frame.misc.z > 13.5 && frame.misc.z < 14.5) { outColor = vec4(uv, 0.0, 1.0); return; }
+  if (frame.misc.z > 42.5 && frame.misc.z < 43.5) {
+    // 43: front faces white, back faces red -- shows which sheets are inverted
+    outColor = vec4(gl_FrontFacing ? vec3(0.9) : vec3(0.9, 0.08, 0.08), 1.0);
+    return;
+  }
+  if (frame.misc.z > 41.5 && frame.misc.z < 42.5) {
+    // 42: normalized radius from the fitted head ellipsoid (1.0 == on the skin)
+    const vec3 kC = vec3(0.0, 0.02, -0.06);
+    const vec3 kR = vec3(0.46, 0.66, 0.52);
+    vec3 q = (vWorld - kC) / kR;
+    outColor = vec4(vec3(length(q) * 0.5), 1.0);
+    return;
+  }
   if (frame.misc.z > 40.5 && frame.misc.z < 41.5) { outColor = vec4(vUV.x > 1.0 ? 1.0 : 0.0, vUV.y < 0.0 ? 1.0 : 0.0, 0.0, 1.0); return; }
 
   if (frame.misc.z > 19.5 && frame.misc.z < 20.5) { outColor = vec4(n * 0.5 + 0.5, 1.0); return; }
@@ -167,7 +168,10 @@ void main() {
   vec3 trans = shadowTransmittance(spread, directF, pLight, bias);
 
 
-  vec3 sunColor = vec3(1.0, 0.95, 0.89) * frame.skyRef.x * 1.35;
+  // The bust is lit by the same sun as the hair, but skin albedo (~0.43) is an
+  // order of magnitude above the fibre albedo, so the skin needs its own gain:
+  // without it the face clips to white under the physically scaled sun.
+  vec3 sunColor = vec3(1.0, 0.95, 0.89) * frame.skyRef.x * 0.72;
 
   // Wrapped diffuse with a wide wrap term. The bust is a fan of overlapping
   // sheets, so its real creases turn the surface away from the sun; a hard
@@ -184,10 +188,10 @@ void main() {
   // turned the side of the face under the hair into a black patch. Real hair
   // leaks: keep a floor on both the direct fraction and the transmitted tint so
   // the skin stays readable and only *dims*.
-  trans = max(trans, vec3(0.30));
-  directF = max(directF, 0.12);
-  vec3 shadowed = mix(vec3(1.0), trans, 0.22);
-  vec3 diffuse = sunColor * wrapLit * mix(shadowed, trans * wrap, 0.45) * albedo;
+  trans = max(trans, vec3(0.42));
+  directF = max(directF, 0.25);
+  vec3 shadowed = mix(vec3(1.0), trans, 0.18);
+  vec3 diffuse = sunColor * wrapLit * mix(shadowed, trans * wrap, 0.35) * albedo;
 
   // Specular (skin F0 ~ 0.028) with the hair shadow applied.
   vec3 h = normalize(w_o + sunDir);
@@ -211,14 +215,28 @@ void main() {
   // weights are ratios against the sun rather than arbitrary gains. Skin in
   // shade is roughly 1/8 of sunlit skin, which is what keeps the face from
   // turning into a flat white mask.
-  vec3 ambient = skyAmbient(n, 0.6) * albedo * 0.30 * ao;
+  vec3 ambient = skyAmbient(n, 0.6) * albedo * 0.34 * ao;
   float fillWrap = clamp(dot(n, w_o) * 0.5 + 0.5, 0.0, 1.0);
   vec3 fill = skyAmbient(w_o, 0.9) * albedo * 0.10 * fillWrap * ao;
+
+  // Portrait fill light.
+  //
+  // With a single key light the far side of a face is lit only by the sky, and
+  // a physically correct sky is not enough: the cheek, the far eye socket and
+  // the jaw collapse into a murky grey-blue mass with no form left in it. Every
+  // portrait has a fill for exactly this reason. It is a soft, slightly warm
+  // source sitting just off the camera axis, shaped by the surface normal (so
+  // it still has form) and by the AO map (so it stays out of the creases).
+  vec3 fillDir = normalize(w_o + vec3(0.0, 0.25, 0.0) +
+                           normalize(cross(w_o, vec3(0.0, 1.0, 0.0)) + 1e-5) * 0.45);
+  float nFill = clamp(dot(n, fillDir) * 0.5 + 0.5, 0.0, 1.0);
+  vec3 fillLight = vec3(1.0, 0.94, 0.90) * sunColor;
+  vec3 beauty = fillLight * albedo * 0.13 * nFill * nFill * ao;
   // Fake subsurface: skylight through the ears/nose edges.
   float rim = pow(1.0 - max(dot(n, w_o), 0.0), 2.5);
   vec3 sss = sunColor * rim * albedo * 0.03 * (0.3 + 0.7 * clamp(NoL * 0.5 + 0.5, 0.0, 1.0));
 
-  vec3 color = diffuse + specular + ambient + fill + sss + spread * sunColor * 0.02;
+  vec3 color = diffuse + specular + ambient + fill + beauty + sss + spread * sunColor * 0.02;
 
   // ---- rain: a water film on the skin ---------------------------------
   // A wet surface loses a lot of its diffuse return (the water layer traps the

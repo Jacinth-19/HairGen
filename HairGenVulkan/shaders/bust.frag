@@ -29,13 +29,13 @@ void main() {
 
   // Polished dark stone rather than matte black: it picks up the sky and the
   // key light so the bust reads as sitting on something, not floating.
-  const vec3 albedo = vec3(0.085, 0.090, 0.105);
+  const vec3 albedo = vec3(0.052, 0.054, 0.060);
   vec3 sunColor = vec3(1.0, 0.95, 0.89) * frame.skyRef.x * 1.5;
 
   // Direct + the hair shadow that falls across the pedestal.
   vec3 direct = sunColor * mix(vec3(ndl), trans * ndl, 0.85);
   // Sky fill plus a little bounce from the floor.
-  vec3 ambient = skyAmbient(n, 0.9) * 0.55 + vec3(0.02);
+  vec3 ambient = skyAmbient(n, 0.9) * 0.30 + vec3(0.01);
 
   // Soft sheen so the silhouette reads against the background.
   vec3 h = normalize(w_o + sunDir);

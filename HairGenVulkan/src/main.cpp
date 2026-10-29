@@ -288,6 +288,10 @@ int main(int argc, char** argv) {
         scene.sky.sun_tilt = -0.16f; scene.sky.turbidity = 5.0f;
         scene.sky.cloud_coverage = 0.40f; scene.weather.wind = 0.3f;
         scene.sky.exposure = 1.9f; scene.sky.bloom = 0.35f;
+        // Put the low sun in frame (the camera looks towards +Z): a sunset you
+        // cannot see is just a dim blue sky, so the key light becomes a rim and
+        // the fire is behind the bust where it belongs.
+        scene.sky.sun_rot = -0.55f;
       } else if (s == "noon") {
         scene.sky.sun_tilt = -1.05f; scene.sky.turbidity = 2.0f;
         scene.sky.cloud_coverage = 0.20f; scene.sky.exposure = 0.62f;

@@ -142,9 +142,21 @@ int main(int argc, char** argv) {
 
   const AssetChunk& idx = assets.get("head.idx");
   CHECK(idx.texel_count() > 0 && idx.texel_count() % 3 == 0);
+  // Regression: the index chunk used to be written as u32 but *declared* u16,
+  // so the loader read each index as two halves and drew a shredded head. Any
+  // change to the declared format silently breaks the topology, so pin both
+  // the format and the index range here.
+  CHECK(idx.format == kAssetU32);
+  if (assets.has("bust.idx")) CHECK(assets.get("bust.idx").format == kAssetU32);
 
   // Head vertices must be inside a sane bounding box (metres, head at origin).
   const AssetChunk& pos = assets.get("head.pos");
+  {
+    size_t bad = 0;
+    for (size_t i = 0; i < idx.texel_count(); ++i)
+      if (size_t(idx.float_at(i)) >= pos.texel_count()) ++bad;
+    CHECK(bad == 0);
+  }
   for (size_t i = 0; i < pos.texel_count(); ++i)
     for (int c = 0; c < 3; ++c) {
       float v = pos.float_at(i * 3 + c);

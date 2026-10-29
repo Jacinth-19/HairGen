@@ -367,8 +367,15 @@ sky LUT bake (256×128) ──┘        │  sky · ground · head · hair
   is handy when bisecting driver problems. `HGEN_DBG=N` replaces the head
   shading with a debug channel (11 ao, 13 normal map, 20 world normal, 22
   albedo, 31 ambient, 32 diffuse, 33 specular, 38 geometric normal, ...).
-* `HGEN_NOCULL=1` draws the head two-sided (the default culls the inside of the
-  scan's open shell, which used to show through as a pale flap on the cheek).
+* `HGEN_NOCULL=1` draws the head two-sided. The default culls back faces, which
+  is safe now that the exporter orients every triangle against the supplied
+  shading normals; before that fix the scan's folds were drawn inside-out and
+  shaded as dark wedges across the face.
+* `head.idx` is stored as **u32** in the bundle and the loader must be told so:
+  the chunk carried u32 data but was declared u16, so every index was read as
+  two halves and the head came out shredded (long thin shards off the
+  silhouette, a "flap" across the cheek, smeared shading). `tests/test_assets`
+  now pins the format and checks every index is in range.
 * One llvmpipe quirk worth knowing: a fragment shader that `discard`s inside an
   alpha-blended, 4× MSAA pass corrupted whole tiles on lavapipe. The rain pass
   therefore writes alpha 0 instead of discarding, which is a no-op under the

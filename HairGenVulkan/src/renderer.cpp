@@ -905,13 +905,17 @@ void Renderer::create_pipelines() {
         {1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12},
         {2, 0, VK_FORMAT_R32G32_SFLOAT, 24},
     };
-    // The bust is a torn triangle strip: parts of it face away from any given
-    // viewpoint, so both sides are shaded (the shader flips the normal on back
-    // faces, as the web demo's fs_obj does). Winding is repaired at export time
-    // (see tools/export_assets.js), so the *inside* of the scan's open shell is
-    // culled instead: with both sides drawn, the far wall of the shell showed
-    // through as the flat pale "flap" across the cheek.
+    // The bust is an open scan made of overlapping sheets, so a single depth
+    // layer is all that is ever visible and both sides must be shaded (the
+    // fragment shader flips the normal towards the viewer, as the web demo's
+    // fs_obj does). Culling would drop exactly the sheets whose winding happens
+    // Back-face culling is now safe: the exporter orients every triangle
+    // against the supplied shading normals (15825/15841 agree), so a
+    // back-facing triangle is a genuine fold in the scan rather than a
+    // winding error. Leaving them in drew the inner half of each folded sheet
+    // over the front, shadowing half the face black. HGEN_NOCULL=1 disables.
     p.cull = std::getenv("HGEN_NOCULL") ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
+
     if (std::getenv("HGEN_NODEPTH")) { p.depth_test = false; p.depth_write = false; }
     p_head_ = create_pipeline(gpu_, p);
   }

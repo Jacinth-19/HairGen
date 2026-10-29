@@ -161,7 +161,7 @@ inline bool apply_hairstyle(struct HairSettings& h, const std::string& name) {
 struct SkySettings {
   // Defaults chosen so the key light matches the reference demo's view-space
   // light (upper left, slightly in front) for the default camera.
-  float sun_rot = 1.35f;     // sun azimuth (rad, world) - frontal key
+  float sun_rot = 2.60f;     // sun azimuth (rad, world) - frontal key
   float sun_tilt = -0.55f;   // sun elevation (rad, negative = above)
   float sun_intensity = 1.15f;
   float exposure = 0.72f;

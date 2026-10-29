@@ -618,17 +618,20 @@ for (let i = 0; i + 2 < strip.length; ++i) {
   }
 
   // --- orientation + smooth normals --------------------------------------
-  // The source is a triangle *strip* whose winding flips from patch to patch, so
-  // raw face normals point inwards over whole regions. Two earlier attempts
-  // failed: per-triangle "point away from the centroid" flips break on concave
-  // anatomy (nose, ears, lips, the sheet under the jaw), and the demo's own
-  // obj_normals array is noisy. Do it properly:
-  //   1. weld vertices by position so the strip's seams do not hide adjacency,
-  //   2. BFS the edge graph, flipping neighbours so they agree on shared edges,
-  //   3. pick ONE global sign so the sheet faces outwards,
-  //   4. write the result back and rebuild area-weighted smooth normals.
-  // With consistent winding, interpolated normals are coherent; mixed winding
-  // interpolates opposite vectors and speckles the face under the sun.
+  // The source is a triangle *strip*, and a naive "advance by one" conversion
+  // gives it a winding that is locally consistent only by accident. Two earlier
+  // attempts to repair it were both wrong: per-triangle "point away from the
+  // centroid" breaks on concave anatomy, and a BFS over the welded edge graph
+  // (flip neighbours until they agree, then one global vote) does not survive
+  // this strip's non-manifold seams -- it left ~23% of the triangles inverted,
+  // which showed up as a checkerboard of back faces across the forehead and, with
+  // back-face culling on, as a flat pale flap over the cheek.
+  //
+  // The supplied `obj_normals` turn out to be excellent: their median dot with
+  // the strip's own face normal is 0.997, and 17820 of 17836 triangles already
+  // agree with it. So orient every triangle *against the supplied normals* --
+  // no graph, no global vote, no accumulation of errors -- and then rebuild the
+  // smooth field from the corrected winding.
   {
     const nv = headPos.length / 3;
     const q = 1e4;
@@ -640,73 +643,33 @@ for (let i = 0; i + 2 < strip.length; ++i) {
       if (g === undefined) { g = weldId.size; weldId.set(k, g); }
       groupOf[i] = g;
     }
-    let triCount = headIdx.length / 3;
-    const tri = new Int32Array(headIdx);
-    for (let i = 0; i < tri.length; ++i) tri[i] = groupOf[tri[i]];
-
-    const edgeMap = new Map();
-    const ekey = (a, b) => (a < b ? a * 4194304 + b : b * 4194304 + a);
-    for (let t = 0; t < triCount; ++t) {
-      for (let e = 0; e < 3; ++e) {
-        const k = ekey(tri[3 * t + e], tri[3 * t + (e + 1) % 3]);
-        let list = edgeMap.get(k);
-        if (!list) edgeMap.set(k, (list = []));
-        list.push(t);
-      }
-    }
-
-    const flip = new Uint8Array(triCount);
-    const seen = new Uint8Array(triCount);
-    for (let seed = 0; seed < triCount; ++seed) {
-      if (seen[seed]) continue;
-      seen[seed] = 1;
-      const stack = [seed];
-      while (stack.length) {
-        const t = stack.pop();
-        for (let e = 0; e < 3; ++e) {
-          const a = tri[3 * t + e], b = tri[3 * t + (e + 1) % 3];
-          for (const u of edgeMap.get(ekey(a, b))) {
-            if (u === t) continue;
-            let dir = 0;
-            for (let f = 0; f < 3; ++f) {
-              const c = tri[3 * u + f], d = tri[3 * u + (f + 1) % 3];
-              if (c === a && d === b) dir = 1;
-              else if (c === b && d === a) dir = -1;
-            }
-            if (dir === 0) continue;
-            const want = flip[t] ^ (dir === 1 ? 1 : 0);
-            if (!seen[u]) { seen[u] = 1; flip[u] = want; stack.push(u); }
-          }
-        }
-      }
-    }
-
-    // Bail out of BFS noise: one global sign, decided by a centroid vote.
+    // Centroid, used to repair normal groups whose faces cancel out.
     let cx3 = 0, cy3 = 0, cz3 = 0;
     for (let i = 0; i < nv; ++i) { cx3 += headPos[3 * i]; cy3 += headPos[3 * i + 1]; cz3 += headPos[3 * i + 2]; }
     cx3 /= nv; cy3 /= nv; cz3 /= nv;
-    let vote = 0;
+
+    let triCount = headIdx.length / 3;
+    let flipped = 0;
     for (let t = 0; t < triCount; ++t) {
       const ia = headIdx[3 * t], ib = headIdx[3 * t + 1], ic = headIdx[3 * t + 2];
       const ax = headPos[3 * ia], ay = headPos[3 * ia + 1], az = headPos[3 * ia + 2];
       const ux = headPos[3 * ib] - ax, uy = headPos[3 * ib + 1] - ay, uz = headPos[3 * ib + 2] - az;
       const vx = headPos[3 * ic] - ax, vy = headPos[3 * ic + 1] - ay, vz = headPos[3 * ic + 2] - az;
       const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-      const mx = (ax + ax + ux + vx) / 3, my = (ay + ay + uy + vy) / 3, mz = (az + az + uz + vz) / 3;
-      let d = nx * (mx - cx3) + ny * (my - cy3) + nz * (mz - cz3);
-      if (flip[t]) d = -d;
-      vote += d;
-    }
-    const globalFlip = vote < 0 ? 1 : 0;
-    let flipped = 0;
-    for (let t = 0; t < triCount; ++t) {
-      if (flip[t] ^ globalFlip) {
+      // Area-weighted mean of the supplied vertex normals.
+      let sx = 0, sy = 0, sz = 0;
+      for (const i of [ia, ib, ic]) {
+        sx += origNrm[3 * i]; sy += origNrm[3 * i + 1]; sz += origNrm[3 * i + 2];
+      }
+      if (nx * sx + ny * sy + nz * sz < 0) {
         const tmp = headIdx[3 * t + 1];
         headIdx[3 * t + 1] = headIdx[3 * t + 2];
         headIdx[3 * t + 2] = tmp;
         ++flipped;
       }
     }
+    console.log(`  orientation: ${flipped} / ${triCount} triangles flipped to match the `
+                + `supplied normals (${triCount - flipped} already agreed)`);
 
     // ---- drop strip "stitch" triangles ---------------------------------
     // The source mesh is a triangle strip. Where the export cuts a row (the neck
@@ -729,7 +692,11 @@ for (let i = 0; i + 2 < strip.length; ++i) {
       }
       const sorted = Array.from(edges).sort((a, b) => a - b);
       const median = sorted[Math.floor(sorted.length * 0.5)] || 0.01;
-      const limit = Math.max(median * 4.5, 0.05);
+      // HGEN_STITCH_MULT tunes how aggressive the strip-repair is (relative to
+      // the median edge of the mesh).
+      const mult = process.env.HGEN_STITCH_MULT !== undefined
+        ? parseFloat(process.env.HGEN_STITCH_MULT) : 4.5;
+      const limit = Math.max(median * mult, 0.02);
       const keptT = [];
       let stitches = 0;
       for (let t = 0; t < triCount; ++t) {
@@ -857,13 +824,19 @@ for (let i = 0; i + 2 < strip.length; ++i) {
       headNrm[3 * i + 2] = gnorm[3 * g + 2];
     }
 
-    // Local sign repair. The BFS above fixes winding per *connected* region, but
-    // where the strip folds back on itself the fold can inherit the opposite
-    // sign, and two overlapping sheets then shade as one bright sheet against
-    // one dark one -- the hard vertical seam on the face. Compare each vertex
-    // normal against the outward direction of a fitted head ellipsoid and flip
-    // the ones that clearly point into the head.
+    // Last-resort sign repair, kept only for genuinely broken normals.
+    //
+    // This used to fire on any vertex normal that pointed into a fitted head
+    // ellipsoid (d < -0.15). That was a patch for the old BFS reorientation,
+    // whose winding was wrong over whole regions; with the winding now taken
+    // from the supplied normals, the ellipsoid test is actively harmful -- it
+    // flips ~1.6 k perfectly good normals on concave anatomy (ears, jaw, the
+    // sheet under the chin, the eye sockets) and turns them into back faces.
+    // Only normals that are *degenerate or almost exactly inverted* are worth
+    // touching now.
     {
+      const inward = process.env.HGEN_NRM_REPAIR !== undefined
+        ? parseFloat(process.env.HGEN_NRM_REPAIR) : -0.9;
       const c = [0, 0.02, -0.06], r = [0.46, 0.66, 0.52];
       let flippedN = 0;
       for (let i = 0; i < nv; ++i) {
@@ -874,7 +847,7 @@ for (let i = 0; i + 2 < strip.length; ++i) {
         const el = Math.hypot(ex, ey, ez) || 1;
         ex /= el; ey /= el; ez /= el;
         const d = headNrm[3 * i] * ex + headNrm[3 * i + 1] * ey + headNrm[3 * i + 2] * ez;
-        if (d < -0.15) {
+        if (d < inward) {
           headNrm[3 * i] = -headNrm[3 * i];
           headNrm[3 * i + 1] = -headNrm[3 * i + 1];
           headNrm[3 * i + 2] = -headNrm[3 * i + 2];
@@ -935,6 +908,22 @@ for (let i = 0; i + 2 < strip.length; ++i) {
       }
       headNrm.set(out);
       console.log(`  normals: spatial blur r=${RADIUS}`);
+    }
+    {
+      // Sanity check: after everything, the winding must agree with the shading
+      // normals, or half the sheet renders as a back face.
+      let agree = 0, disagree = 0;
+      for (let t = 0; t < triCount; ++t) {
+        const ia = headIdx[3 * t], ib = headIdx[3 * t + 1], ic = headIdx[3 * t + 2];
+        const ax = headPos[3 * ia], ay = headPos[3 * ia + 1], az = headPos[3 * ia + 2];
+        const ux = headPos[3 * ib] - ax, uy = headPos[3 * ib + 1] - ay, uz = headPos[3 * ib + 2] - az;
+        const vx = headPos[3 * ic] - ax, vy = headPos[3 * ic + 1] - ay, vz = headPos[3 * ic + 2] - az;
+        const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        let sx = 0, sy = 0, sz = 0;
+        for (const i of [ia, ib, ic]) { sx += headNrm[3 * i]; sy += headNrm[3 * i + 1]; sz += headNrm[3 * i + 2]; }
+        if (nx * sx + ny * sy + nz * sz >= 0) agree++; else disagree++;
+      }
+      console.log(`  winding vs shading normals: ${agree} agree, ${disagree} disagree`);
     }
     console.log(`  normals: ${triCount} tris, ${weldId.size} welded verts, ${flipped} flipped outwards, ` +
                 `${nrmPasses} smoothing passes, ${degenerate} degenerate groups repaired`);
@@ -1030,7 +1019,7 @@ console.log('hair mesh texture: %dx%dx%d, %d levels', tex_hairmesh_width, tex_ha
 addChunk('head.pos', headPos.length / 3, 1, 1, 3, 2, f32(headPos));
 addChunk('head.nrm', headNrm.length / 3, 1, 1, 3, 2, f32(headNrm));
 addChunk('head.uv', headUV.length / 2, 1, 1, 2, 2, f32(headUV));
-addChunk('head.idx', headIdx.length, 1, 1, 1, 1, u32(headIdx));
+addChunk('head.idx', headIdx.length, 1, 1, 1, 3, u32(headIdx));
 
 addChunk('hairmesh.pos', tex_hairmesh_width, tex_hairmesh_height, tex_hairmesh_depth, 3, 2, f32(tex_hairmesh_data));
 addChunk('hairmesh.uv', tex_hairmesh_width, tex_hairmesh_height, 1, 2, 2, f32(tex_uv_data));
