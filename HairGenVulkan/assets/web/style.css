@@ -1,0 +1,248 @@
+/* style.css - control panel look of the original hair-mesh demo: a fixed,
+   full-height preview on the left and a scrollable parameter column on the
+   right, dark (#222) with #aaa text and thin blue-ish sliders. */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #222;
+  color: #aaa;
+  font: 13px/1.45 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ------------------------------------------------------------- preview --- */
+
+#cView {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  right: 300px;
+  background: #111;
+  overflow: hidden;
+}
+
+#cCanvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  cursor: grab;
+  user-select: none;
+}
+
+#cCanvas:active { cursor: grabbing; }
+
+#cStatus {
+  position: absolute;
+  left: 12px;
+  top: 10px;
+  color: #666;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+
+#cHint {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  color: #4b4b4b;
+  font-size: 11px;
+  pointer-events: none;
+}
+
+/* -------------------------------------------------------------- panel --- */
+
+#cParam {
+  position: fixed;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 300px;
+  padding: 10px 14px 40px 14px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: #282828;
+  border-left: 1px solid #333;
+}
+
+#cParam::-webkit-scrollbar { width: 8px; }
+#cParam::-webkit-scrollbar-thumb { background: #3d3d3d; border-radius: 4px; }
+#cParam::-webkit-scrollbar-track { background: #232323; }
+
+/* Fieldset-like group header. */
+.cGroupTitle {
+  margin: 16px 0 6px 0;
+  padding: 3px 0 3px 6px;
+  color: #cfcfcf;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  border-left: 2px solid #5b7fbf;
+  border-bottom: 1px solid #333;
+}
+.cGroupTitle:first-child { margin-top: 2px; }
+
+.cRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 22px;
+  padding: 1px 0;
+}
+
+.cName {
+  color: #aaa;
+  flex: 0 0 108px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cField {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cField output {
+  flex: 0 0 42px;
+  text-align: right;
+  color: #777;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+/* Slider */
+.cSInput {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1 1 auto;
+  width: 100%;
+  height: 14px;
+  background: transparent;
+  outline: none;
+  margin: 0;
+}
+
+.cSInput::-webkit-slider-runnable-track {
+  height: 3px;
+  background: #3a3a3a;
+  border-radius: 2px;
+}
+.cSInput::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: #7d9ed4;
+  border: none;
+}
+.cSInput::-moz-range-track {
+  height: 3px;
+  background: #3a3a3a;
+  border-radius: 2px;
+}
+.cSInput::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border: none;
+  border-radius: 50%;
+  background: #7d9ed4;
+}
+.cSInput:hover::-webkit-slider-thumb { background: #93b2e6; }
+
+/* Checkbox */
+.cChecks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  justify-content: flex-start;
+}
+.cChecks label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #aaa;
+  cursor: pointer;
+}
+input[type="checkbox"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border: 1px solid #4c4c4c;
+  background: #1e1e1e;
+  border-radius: 2px;
+  position: relative;
+  cursor: pointer;
+  margin: 0;
+}
+input[type="checkbox"]:checked { background: #5b7fbf; border-color: #5b7fbf; }
+input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 0px;
+  width: 3px;
+  height: 7px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+
+select {
+  width: 100%;
+  background: #1e1e1e;
+  color: #bbb;
+  border: 1px solid #3d3d3d;
+  border-radius: 2px;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+select:hover { border-color: #505050; }
+
+.cButtons {
+  display: flex;
+  gap: 8px;
+  margin-top: 18px;
+}
+.cButtons button {
+  flex: 1;
+  background: #333;
+  color: #bbb;
+  border: 1px solid #444;
+  border-radius: 3px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cButtons button:hover { background: #3d3d3d; color: #ddd; }
+.cButtons button:active { background: #2b2b2b; }
+
+.cFoot {
+  margin-top: 18px;
+  color: #565656;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+@media (max-width: 720px) {
+  #cView { right: 0; bottom: 46%; }
+  #cParam { width: 100%; top: 54%; border-left: none; border-top: 1px solid #333; }
+}

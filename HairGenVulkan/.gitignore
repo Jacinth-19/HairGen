@@ -1,0 +1,17 @@
+# Build trees
+build/
+build-*/
+build_asan/
+CMakeFiles/
+CMakeCache.txt
+
+# Local binaries
+hairgen
+*.o
+*.spv
+
+# Shader scratch files
+shaders/spv/_*
+
+# Capture intermediates (the rendered deliverables in media/ are kept)
+media/frames/

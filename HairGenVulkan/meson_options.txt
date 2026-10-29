@@ -1,0 +1,6 @@
+option('capture_resolution', type: 'integer', value: 768,
+  description: 'Square resolution used by tools/capture.py')
+option('build_tests', type: 'boolean', value: true,
+  description: 'Build the unit/integration test binaries')
+option('integration_render', type: 'boolean', value: true,
+  description: 'Run the headless render test (needs a Vulkan ICD, e.g. lavapipe)')
