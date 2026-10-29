@@ -640,7 +640,7 @@ for (let i = 0; i + 2 < strip.length; ++i) {
       if (g === undefined) { g = weldId.size; weldId.set(k, g); }
       groupOf[i] = g;
     }
-    const triCount = headIdx.length / 3;
+    let triCount = headIdx.length / 3;
     const tri = new Int32Array(headIdx);
     for (let i = 0; i < tri.length; ++i) tri[i] = groupOf[tri[i]];
 
@@ -706,6 +706,41 @@ for (let i = 0; i + 2 < strip.length; ++i) {
         headIdx[3 * t + 2] = tmp;
         ++flipped;
       }
+    }
+
+    // ---- drop strip "stitch" triangles ---------------------------------
+    // The source mesh is a triangle strip. Where the export cuts a row (the neck
+    // cut) or where the strip jumps between scan rows, the strip connectivity
+    // turns into long, thin triangles that span unrelated parts of the head; on
+    // screen they are the flat pale sheet folded across the cheek. Compare each
+    // triangle's longest edge against the median edge of the mesh and drop the
+    // ones that are far above it.
+    {
+      const triLen = new Float64Array(triCount);
+      const edges = new Float64Array(triCount);
+      for (let t = 0; t < triCount; ++t) {
+        const ia = headIdx[3 * t], ib = headIdx[3 * t + 1], ic = headIdx[3 * t + 2];
+        const dist = (a, b) => Math.hypot(headPos[3 * a] - headPos[3 * b],
+                                          headPos[3 * a + 1] - headPos[3 * b + 1],
+                                          headPos[3 * a + 2] - headPos[3 * b + 2]);
+        const e = Math.max(dist(ia, ib), dist(ib, ic), dist(ic, ia));
+        triLen[t] = e;
+        edges[t] = e;
+      }
+      const sorted = Array.from(edges).sort((a, b) => a - b);
+      const median = sorted[Math.floor(sorted.length * 0.5)] || 0.01;
+      const limit = Math.max(median * 4.5, 0.05);
+      const keptT = [];
+      let stitches = 0;
+      for (let t = 0; t < triCount; ++t) {
+        if (triLen[t] > limit) { ++stitches; continue; }
+        keptT.push(headIdx[3 * t], headIdx[3 * t + 1], headIdx[3 * t + 2]);
+      }
+      headIdx.length = 0;
+      for (const v of keptT) headIdx.push(v);
+      triCount = headIdx.length / 3;
+      console.log(`  stitch triangles dropped: ${stitches} / ${stitches + triCount}`
+                  + ` (median edge ${median.toFixed(4)}, limit ${limit.toFixed(3)})`);
     }
 
     const acc = new Float64Array(weldId.size * 3);

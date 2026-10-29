@@ -1,5 +1,5 @@
-// background.frag - far-field sky for the camera pass: the baked sky table plus
-// a screen-space sun glow.
+// background.frag - far-field sky for the camera pass: the Preetham atmosphere,
+// the cloud deck, the sun disc and the rain veil.
 #version 450
 
 #include "lib/common.glsl"
@@ -16,5 +16,13 @@ vec3 viewRay(vec2 uv) {
 
 void main() {
   vec3 dir = viewRay(vUV);
-  outColor = vec4(skyWithClouds(dir), 1.0);
+  vec3 sky = skyWithClouds(dir);
+
+  // Sheets of rain hanging in the air between the camera and the sky. Drawn
+  // here (rather than as geometry) because a full screen veil costs nothing and
+  // reads correctly at every camera angle.
+  vec4 veil = rainVeil(dir);
+  sky = sky * (1.0 - veil.a * 0.75) + veil.rgb * veil.a * 0.85;
+
+  outColor = vec4(sky, 1.0);
 }

@@ -177,7 +177,9 @@ function flush() {
 
 function wireSimpleInputs() {
   const ids = ['sunRot', 'sunTilt', 'sunIntensity', 'exposure', 'bloom', 'clouds',
-               'vignette', 'rot', 'tilt', 'dist',
+               'vignette', 'turbidity', 'rayleigh', 'mie',
+               'rain', 'wetness', 'puddles', 'lensDrops', 'wind', 'windDir', 'gravity',
+               'rot', 'tilt', 'dist',
                // hair dye
                'dyeStrength', 'rootDarken', 'colorVar'];
   for (const id of ids) {
@@ -258,6 +260,27 @@ function wireSimpleInputs() {
   });
 
   document.getElementById('bReset').addEventListener('click', () => location.reload());
+
+  // Weather presets: one click to a rainy set, mirrored exactly by the CLI's
+  // --preset flag so a still and the live view match.
+  const weatherPresets = {
+    bDry: { rain: 0, wetness: 0, 'lensDrops': 0, wind: 0.15, clouds: 0.15 },
+    bRain: { rain: 0.65, wetness: 0.85, 'lensDrops': 0.55, wind: 0.55, clouds: 0.75 },
+    bStorm: { rain: 1, wetness: 1, 'lensDrops': 0.9, wind: 1.0, clouds: 1.0,
+              turbidity: 5.0 },
+  };
+  for (const [id, preset] of Object.entries(weatherPresets)) {
+    const btn = document.getElementById(id);
+    if (!btn) continue;
+    btn.addEventListener('click', () => {
+      for (const [key, value] of Object.entries(preset)) {
+        const input = document.getElementById(key);
+        if (!input) continue;
+        input.value = value;
+        input.dispatchEvent(new Event('input'));
+      }
+    });
+  }
 }
 
 /* --------------------------------------------- orbit / zoom on the preview */

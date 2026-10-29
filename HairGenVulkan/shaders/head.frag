@@ -120,8 +120,8 @@ void main() {
   // shading variation (and its UV-island seams) survived as tonal bands across
   // the face. Keep the range narrow and the amount small: this term is only
   // meant to carry pores, lip colour and the faint brow/nose reddening.
-  detail = clamp(detail, vec3(0.90), vec3(1.10));
-  detail = mix(vec3(1.0), detail, 0.55);
+  detail = clamp(detail, vec3(0.80), vec3(1.25));
+  detail = mix(vec3(1.0), detail, 0.70);
   // Base skin tone from the demo photo, with the photograph's own lighting
   // divided out, so the shading here is ours.
   const vec3 kSkin = vec3(0.80, 0.62, 0.53);
@@ -166,6 +166,7 @@ void main() {
   vec3 spread;
   vec3 trans = shadowTransmittance(spread, directF, pLight, bias);
 
+
   vec3 sunColor = vec3(1.0, 0.95, 0.89) * frame.skyRef.x * 1.35;
 
   // Wrapped diffuse with a wide wrap term. The bust is a fan of overlapping
@@ -179,6 +180,12 @@ void main() {
   // Hair shadows land on the face as broad soft bands; keep them as a tint
   // rather than a hard mask so the features stay readable.
   if (frame.misc.z > 29.5 && frame.misc.z < 30.5) { trans = vec3(1.0); directF = 1.0; }  // no shadow
+  // A dense curtain of strands blocks nearly all of the direct beam, which
+  // turned the side of the face under the hair into a black patch. Real hair
+  // leaks: keep a floor on both the direct fraction and the transmitted tint so
+  // the skin stays readable and only *dims*.
+  trans = max(trans, vec3(0.30));
+  directF = max(directF, 0.12);
   vec3 shadowed = mix(vec3(1.0), trans, 0.22);
   vec3 diffuse = sunColor * wrapLit * mix(shadowed, trans * wrap, 0.45) * albedo;
 
@@ -200,14 +207,33 @@ void main() {
   ao = mix(1.0, ao * ao, 0.85);  // the map is fairly bright; square to bite
 
   // Ambient / IBL, plus a view-facing fill so the face keeps form in shadow.
-  vec3 ambient = skyAmbient(n, 0.6) * albedo * 1.25 * ao;
+  // The skylight probe is now a physically scaled Preetham atmosphere, so these
+  // weights are ratios against the sun rather than arbitrary gains. Skin in
+  // shade is roughly 1/8 of sunlit skin, which is what keeps the face from
+  // turning into a flat white mask.
+  vec3 ambient = skyAmbient(n, 0.6) * albedo * 0.30 * ao;
   float fillWrap = clamp(dot(n, w_o) * 0.5 + 0.5, 0.0, 1.0);
-  vec3 fill = skyAmbient(w_o, 0.9) * albedo * 0.42 * fillWrap * ao;
+  vec3 fill = skyAmbient(w_o, 0.9) * albedo * 0.10 * fillWrap * ao;
   // Fake subsurface: skylight through the ears/nose edges.
   float rim = pow(1.0 - max(dot(n, w_o), 0.0), 2.5);
   vec3 sss = sunColor * rim * albedo * 0.03 * (0.3 + 0.7 * clamp(NoL * 0.5 + 0.5, 0.0, 1.0));
 
   vec3 color = diffuse + specular + ambient + fill + sss + spread * sunColor * 0.02;
+
+  // ---- rain: a water film on the skin ---------------------------------
+  // A wet surface loses a lot of its diffuse return (the water layer traps the
+  // light) and gains a much tighter, brighter specular lobe, which is exactly
+  // what separates "someone standing in the rain" from "a dry statue".
+  float wet = clamp(frame.weather.y, 0.0, 1.0);
+  if (wet > 0.001) {
+    color = mix(color, color * vec3(0.74, 0.76, 0.82), wet * 0.55);
+    float specWet = distributionGGX(NoH, 0.12) * (0.08 + 0.92 * F) * ndl;
+    color += sunColor * specWet * specMask * wet * 0.55;
+    // Sky and hair light reflected off the film.
+    vec3 rWet = reflect(-w_o, n);
+    color += skyAmbient(rWet, 0.12) * wet * 0.10 * F * ao;
+  }
+
   if (frame.misc.z > 30.5 && frame.misc.z < 31.5) color = ambient;
   if (frame.misc.z > 31.5 && frame.misc.z < 32.5) color = diffuse;
   if (frame.misc.z > 32.5 && frame.misc.z < 33.5) color = specular;

@@ -64,6 +64,16 @@ void usage() {
       "  --rot R --tilt R --dist D --fov F\n"
       "  --sun-rot R --sun-tilt R --sun-intensity F\n"
       "  --exposure F --bloom F --clouds F --vignette F\n"
+      "  --turbidity F --rayleigh F --mie F --mie-g F   Preetham atmosphere\n"
+      "\n"
+      "Weather / effects\n"
+      "  --rain F              rain amount, 0 = dry (default 0)\n"
+      "  --wetness F           surface wetness (defaults to the rain amount)\n"
+      "  --wind F --wind-dir R wind strength and azimuth for rain and hair\n"
+      "  --gravity F           hair sag / weight (default 0.35)\n"
+      "  --puddles F           how much of the ground holds water (default 0.55)\n"
+      "  --lens-drops F        rain droplets on the virtual lens (defaults to rain)\n"
+      "  --preset NAME         dry | drizzle | rain | storm | sunset | noon\n"
       "  --shadow-res N        shadow map resolution (default 1024)\n"
       "\n"
       "Misc\n"
@@ -241,6 +251,51 @@ int main(int argc, char** argv) {
     else if (match(a, "--bloom")) scene.sky.bloom = float(std::atof(next(a).c_str()));
     else if (match(a, "--clouds")) scene.sky.cloud_coverage = float(std::atof(next(a).c_str()));
     else if (match(a, "--vignette")) scene.sky.vignette = float(std::atof(next(a).c_str()));
+    else if (match(a, "--turbidity")) scene.sky.turbidity = float(std::atof(next(a).c_str()));
+    else if (match(a, "--rayleigh")) scene.sky.rayleigh = float(std::atof(next(a).c_str()));
+    else if (match(a, "--mie")) scene.sky.mie = float(std::atof(next(a).c_str()));
+    else if (match(a, "--mie-g")) scene.sky.mie_g = float(std::atof(next(a).c_str()));
+    else if (match(a, "--rain")) scene.weather.rain = float(std::atof(next(a).c_str()));
+    else if (match(a, "--wetness")) scene.weather.wetness = float(std::atof(next(a).c_str()));
+    else if (match(a, "--wind")) scene.weather.wind = float(std::atof(next(a).c_str()));
+    else if (match(a, "--wind-dir")) scene.weather.wind_dir = float(std::atof(next(a).c_str()));
+    else if (match(a, "--gravity")) scene.weather.gravity = float(std::atof(next(a).c_str()));
+    else if (match(a, "--puddles")) scene.weather.puddles = float(std::atof(next(a).c_str()));
+    else if (match(a, "--lens-drops")) scene.weather.lens_drops = float(std::atof(next(a).c_str()));
+    else if (match(a, "--preset")) {
+      std::string s = next(a);
+      if (s == "dry") {
+        scene.weather.rain = 0.0f; scene.weather.wetness = 0.0f;
+        scene.weather.wind = 0.15f; scene.sky.cloud_coverage = 0.15f;
+        scene.weather.lens_drops = 0.0f;
+      } else if (s == "drizzle") {
+        scene.weather.rain = 0.30f; scene.weather.wetness = 0.55f;
+        scene.weather.wind = 0.35f; scene.sky.cloud_coverage = 0.55f;
+        scene.weather.lens_drops = 0.25f;
+      } else if (s == "rain") {
+        scene.weather.rain = 0.65f; scene.weather.wetness = 0.85f;
+        scene.weather.wind = 0.55f; scene.sky.cloud_coverage = 0.75f;
+        scene.weather.lens_drops = 0.55f;
+      } else if (s == "storm") {
+        scene.weather.rain = 1.0f; scene.weather.wetness = 1.0f;
+        scene.weather.wind = 1.0f; scene.sky.cloud_coverage = 1.0f;
+        scene.weather.lens_drops = 0.9f; scene.sky.turbidity = 5.0f;
+        scene.sky.exposure = 1.05f; scene.weather.gravity = 0.45f;
+      } else if (s == "sunset") {
+        // sun_tilt is negative-up: -0.16 rad puts the sun ~9 degrees above the
+        // horizon, where the Preetham model reddens and the earth-shadow cutoff
+        // starts to eat into the intensity.
+        scene.sky.sun_tilt = -0.16f; scene.sky.turbidity = 5.0f;
+        scene.sky.cloud_coverage = 0.40f; scene.weather.wind = 0.3f;
+        scene.sky.exposure = 1.9f; scene.sky.bloom = 0.35f;
+      } else if (s == "noon") {
+        scene.sky.sun_tilt = -1.05f; scene.sky.turbidity = 2.0f;
+        scene.sky.cloud_coverage = 0.20f; scene.sky.exposure = 0.62f;
+      } else {
+        std::fprintf(stderr, "unknown preset: %s\n", s.c_str());
+        std::exit(2);
+      }
+    }
     else if (match(a, "--assets")) asset_dir = next(a);
     else if (match(a, "--icd")) icd = next(a);
     else if (match(a, "--list-devices")) list_devices = true;
@@ -288,6 +343,7 @@ int main(int argc, char** argv) {
 
     // Box-filter a supersampled frame back to the requested resolution.
     auto downsample = [&](const std::vector<uint8_t>& src, int sw, int sh) {
+      (void)sh;  // the destination is opt.width x opt.height by construction
       if (ss == 1) return src;
       std::vector<uint8_t> dst(size_t(opt.width) * opt.height * 4);
       const float inv = 1.0f / float(ss * ss);

@@ -54,7 +54,7 @@ struct HairSettings {
   // shipped and selectable, but the render starts pink.
   float a_f[3] = {0.68f, 0.36f, 0.42f};
   float r_dev = 8.0f, tt_dev = 10.0f, trt_dev = 15.0f;
-  float ambient = 0.20f;
+  float ambient = 0.30f;
 
   // Index into the asset bundle's material list (0 = std_blond, 1 = rosa).
   // Selects the Marschner lookup tables *and* the absorption preset.
@@ -164,13 +164,32 @@ struct SkySettings {
   float sun_rot = 1.35f;     // sun azimuth (rad, world) - frontal key
   float sun_tilt = -0.55f;   // sun elevation (rad, negative = above)
   float sun_intensity = 1.15f;
-  float exposure = 1.0f;
+  float exposure = 0.72f;
   float bloom = 0.25f;
   float cloud_coverage = 0.15f;
   float vignette = 0.30f;
   bool show_ground = true;
   float ground_y = -0.55f;
   bool show_hair_mesh = false;
+
+  // ---- atmosphere (Preetham et al. 1999) --------------------------------
+  // Turbidity: 2 = crystal clear, 4 = hazy, 10 = very polluted.
+  float turbidity = 2.2f;
+  float rayleigh = 1.0f;   // Rayleigh multiplier (how blue the sky is)
+  float mie = 0.0035f;      // Mie coefficient (aerosol haze)
+  float mie_g = 0.80f;     // Mie anisotropy
+};
+
+// Weather / liquid effects. All procedural: no extra assets, no textures.
+struct WeatherSettings {
+  float rain = 0.0f;        // 0 = dry, 1 = downpour
+  float wetness = 0.0f;     // surface wetness (0 = track the rain amount)
+  float wind = 0.0f;        // wind strength: bends the hair, shears the rain
+  float wind_dir = 0.7f;    // wind azimuth (rad)
+  float gravity = 0.35f;    // hair sag (0 = weightless, 1 = heavy)
+  float puddles = 0.38f;    // how much of the ground collects water
+  float lens_drops = 0.0f;  // rain droplets on the virtual lens (0 = track rain)
+  float speed = 1.0f;       // effect animation speed
 };
 
 struct RenderOptions {
@@ -193,6 +212,7 @@ struct Scene {
   CameraSettings camera;
   HairSettings hair;
   SkySettings sky;
+  WeatherSettings weather;
 };
 
 }  // namespace hgen

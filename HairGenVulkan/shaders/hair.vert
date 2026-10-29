@@ -171,6 +171,41 @@ float evalHairVert(out vec3 p, out vec3 p2, vec4 pos, vec4 pos2, vec2 texW) {
   p += style2obj * dStyle;
   p2 += style2obj * dStyle2;
 
+  // ---- physics: wind, gravity and wet weight ---------------------------
+  // A strand behaves like a damped, tapered pendulum pinned at the root: the
+  // further from the root, the more it moves (mass ~ w^1.6) and the slower it
+  // returns. There is no spring integration here - the geometry is static - so
+  // the dynamics are an analytic sum of two travelling waves plus a gust term,
+  // which is enough to read as wind once the camera or the clock moves.
+  {
+    float windAmt = clamp(frame.weather.z, 0.0, 2.0);
+    float gravAmt = clamp(frame.weather2.x, 0.0, 1.5);
+    float wetAmt = clamp(frame.weather.y, 0.0, 1.0);
+    float t = frame.weather2.w;
+
+    float mass = pow(clamp(w, 0.0, 1.0), 1.7);
+    float phase = Rand(instance, 8) * 6.2831853;
+    // Two octaves of sway; the gust term makes whole clumps move together.
+    float sway = sin(t * (1.5 + 1.1 * windAmt) + phase) * 0.62 +
+                 sin(t * (3.1 + 1.9 * windAmt) + phase * 1.7) * 0.38;
+    vec3 windDir = normalize(vec3(cos(frame.weather.w), 0.0, sin(frame.weather.w)) + 1e-5);
+
+    // Steady drag bends the hair downwind, the wave is the oscillation about it.
+    vec3 drag = windDir * (0.010 + 0.085 * windAmt) * mass;
+    vec3 gust = windDir * (0.045 * windAmt) * sway * mass;
+    // Sideways flutter perpendicular to the wind.
+    vec3 side = vec3(-windDir.z, 0.0, windDir.x);
+    vec3 flutter = side * (0.030 * windAmt + 0.010) * sway * mass;
+
+    // Gravity: free length sags, and wet hair is much heavier.
+    float sag = (0.055 * gravAmt + 0.075 * wetAmt) * pow(clamp(w, 0.0, 1.0), 2.0);
+
+    p += drag + gust + flutter;
+    p.y -= sag;
+    p2 += (drag + gust + flutter) * 1.02;
+    p2.y -= sag * 1.02;
+  }
+
   p = collideWithHead(p);
   p2 = collideWithHead(p2);
 

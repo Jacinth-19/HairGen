@@ -134,6 +134,16 @@ void apply_params(Scene& s, const std::string& body) {
   if (json_number(body, "bloom", f)) s.sky.bloom = f;
   if (json_number(body, "clouds", f)) s.sky.cloud_coverage = f;
   if (json_number(body, "vignette", f)) s.sky.vignette = f;
+  if (json_number(body, "turbidity", f)) s.sky.turbidity = f;
+  if (json_number(body, "rayleigh", f)) s.sky.rayleigh = f;
+  if (json_number(body, "mie", f)) s.sky.mie = f;
+  if (json_number(body, "rain", f)) s.weather.rain = f;
+  if (json_number(body, "wetness", f)) s.weather.wetness = f;
+  if (json_number(body, "wind", f)) s.weather.wind = f;
+  if (json_number(body, "windDir", f)) s.weather.wind_dir = f;
+  if (json_number(body, "gravity", f)) s.weather.gravity = f;
+  if (json_number(body, "puddles", f)) s.weather.puddles = f;
+  if (json_number(body, "lensDrops", f)) s.weather.lens_drops = f;
   if (json_number(body, "density", f)) s.hair.density = f;
   if (json_number(body, "lengthVar", f)) s.hair.length_var = f;
   if (json_number(body, "fuzz", f)) s.hair.fuzz_amount = f;

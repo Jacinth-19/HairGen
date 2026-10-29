@@ -116,23 +116,72 @@
     </div>
     <div class="cRow">
       <span class="cName">sun intensity</span>
-      <span class="cField"><input class="cSInput" type="range" id="sunIntensity" min="0.1" max="6" step="0.05" value="1"><output></output></span>
+      <span class="cField"><input class="cSInput" type="range" id="sunIntensity" min="0.1" max="6" step="0.05" value="1.15"><output></output></span>
     </div>
     <div class="cRow">
       <span class="cName">exposure</span>
-      <span class="cField"><input class="cSInput" type="range" id="exposure" min="0.2" max="2.5" step="0.01" value="1"><output></output></span>
+      <span class="cField"><input class="cSInput" type="range" id="exposure" min="0.2" max="2.5" step="0.01" value="0.72"><output></output></span>
     </div>
     <div class="cRow">
       <span class="cName">bloom</span>
-      <span class="cField"><input class="cSInput" type="range" id="bloom" min="0" max="1" step="0.01" value="0.22"><output></output></span>
+      <span class="cField"><input class="cSInput" type="range" id="bloom" min="0" max="1" step="0.01" value="0.25"><output></output></span>
     </div>
     <div class="cRow">
       <span class="cName">clouds</span>
-      <span class="cField"><input class="cSInput" type="range" id="clouds" min="0" max="1" step="0.01" value="0.35"><output></output></span>
+      <span class="cField"><input class="cSInput" type="range" id="clouds" min="0" max="1" step="0.01" value="0.15"><output></output></span>
     </div>
     <div class="cRow">
       <span class="cName">vignette</span>
-      <span class="cField"><input class="cSInput" type="range" id="vignette" min="0" max="1" step="0.01" value="0.28"><output></output></span>
+      <span class="cField"><input class="cSInput" type="range" id="vignette" min="0" max="1" step="0.01" value="0.30"><output></output></span>
+    </div>
+
+    <div class="cGroupTitle">Atmosphere</div>
+    <div class="cRow">
+      <span class="cName">turbidity</span>
+      <span class="cField"><input class="cSInput" type="range" id="turbidity" min="1.5" max="8" step="0.05" value="2.2"><output></output></span>
+    </div>
+    <div class="cRow">
+      <span class="cName">rayleigh</span>
+      <span class="cField"><input class="cSInput" type="range" id="rayleigh" min="0.2" max="3" step="0.05" value="1"><output></output></span>
+    </div>
+    <div class="cRow">
+      <span class="cName">haze (mie)</span>
+      <span class="cField"><input class="cSInput" type="range" id="mie" min="0" max="0.02" step="0.0005" value="0.0035"><output></output></span>
+    </div>
+
+    <div class="cGroupTitle">Weather</div>
+    <div class="cRow">
+      <span class="cName">rain</span>
+      <span class="cField"><input class="cSInput" type="range" id="rain" min="0" max="1" step="0.01" value="0"><output></output></span>
+    </div>
+    <div class="cRow">
+      <span class="cName">wetness</span>
+      <span class="cField"><input class="cSInput" type="range" id="wetness" min="0" max="1" step="0.01" value="0"><output></output></span>
+    </div>
+    <div class="cRow">
+      <span class="cName">puddles</span>
+      <span class="cField"><input class="cSInput" type="range" id="puddles" min="0" max="1" step="0.01" value="0.38"><output></output></span>
+    </div>
+    <div class="cRow">
+      <span class="cName">lens drops</span>
+      <span class="cField"><input class="cSInput" type="range" id="lensDrops" min="0" max="1" step="0.01" value="0"><output></output></span>
+    </div>
+    <div class="cRow">
+      <span class="cName">wind</span>
+      <span class="cField"><input class="cSInput" type="range" id="wind" min="0" max="1.5" step="0.01" value="0"><output></output></span>
+    </div>
+    <div class="cRow">
+      <span class="cName">wind dir</span>
+      <span class="cField"><input class="cSInput" type="range" id="windDir" min="-3.14" max="3.14" step="0.02" value="0.7"><output></output></span>
+    </div>
+    <div class="cRow">
+      <span class="cName">hair weight</span>
+      <span class="cField"><input class="cSInput" type="range" id="gravity" min="0" max="1.5" step="0.01" value="0.35"><output></output></span>
+    </div>
+    <div class="cButtons">
+      <button id="bRain">rain</button>
+      <button id="bStorm">storm</button>
+      <button id="bDry">dry</button>
     </div>
 
     <div class="cGroupTitle">Camera</div>
@@ -153,7 +202,7 @@
       <button id="bSnapshot">save PNG</button>
       <button id="bReset">reset</button>
     </div>
-    <div class="cFoot">HairGenVulkan &middot; Marschner fiber shading, hair-mesh geometry, procedurally baked sky.</div>
+    <div class="cFoot">HairGenVulkan &middot; Marschner fiber shading, hair-mesh geometry, Preetham sky, rain &amp; wet surfaces.</div>
   </div>
 
   <script src="/app.js"></script>

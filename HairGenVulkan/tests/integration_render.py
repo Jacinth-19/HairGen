@@ -136,8 +136,29 @@ def main():
                 diff_px += 1
     assert diff_px > (w * h) // 10, \
         'hair pass barely changed the image (%d of %d pixels)' % (diff_px, w * h)
-    print('integration_render: ok (range %d..%d, %d/%d pixels change when hair is off)'
-          % (lo, hi, diff_px, w * h))
+    # The weather system: a rainy frame must differ from the dry one (rain
+    # streaks, wet ground, dimmer sun), and the rain must not blank the image.
+    dry = os.path.join(tmp, 'dry.png')
+    wet = os.path.join(tmp, 'wet.png')
+    if render(binary, dry, ['--preset', 'dry']) is None:
+        print('no Vulkan device available - skipping integration test')
+        return 77
+    render(binary, wet, ['--preset', 'storm'])
+    wd, hd, chd, px_dry = png_size_and_pixels(dry)
+    ww, hw, chw, px_wet = png_size_and_pixels(wet)
+    assert (wd, hd) == (96, 96) and (ww, hw) == (96, 96), 'unexpected image size'
+    wlo, whi = stats(px_wet)
+    assert whi - wlo > 20, 'rain frame is flat (lo=%d hi=%d)' % (wlo, whi)
+    rain_diff = 0
+    for row_a, row_b in zip(px_dry, px_wet):
+        for x in range(0, len(row_a), chd):
+            if row_a[x:x + chd] != row_b[x:x + chd]:
+                rain_diff += 1
+    assert rain_diff > (wd * hd) // 10, \
+        'rain barely changed the image (%d of %d pixels)' % (rain_diff, wd * hd)
+
+    print('integration_render: ok (range %d..%d, %d/%d pixels change when hair is off,'
+          ' %d/%d when it rains)' % (lo, hi, diff_px, w * h, rain_diff, wd * hd))
     return 0
 
 

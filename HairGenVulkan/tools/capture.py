@@ -36,6 +36,19 @@ STYLES = {
 # Procedural hairstyles (one guide mesh, restyled by the operator stack).
 HAIRSTYLES = ['bob', 'sleek', 'wavy', 'curly', 'afro', 'pixie', 'long', 'punk']
 
+# Weather presets: the Preetham atmosphere, the rain system, the wet ground and
+# the lens droplets, one still each.
+WEATHER = [
+    ('dry', ['--preset', 'dry']),
+    ('drizzle', ['--preset', 'drizzle']),
+    ('rain', ['--preset', 'rain']),
+    ('storm', ['--preset', 'storm']),
+    ('sunset', ['--preset', 'sunset']),
+    ('noon', ['--preset', 'noon', '--clouds', '0.35']),
+    ('puddles', ['--preset', 'rain', '--puddles', '0.85', '--wind', '0.9']),
+    ('wet-closeup', ['--preset', 'rain', '--dist', '1.9', '--exposure', '0.85']),
+]
+
 # ---------------------------------------------------------------- helpers
 
 
@@ -225,6 +238,13 @@ def main():
             render(binary, p, size, extra)
             stills.append((p, 'control: ' + name))
 
+        # Weather / liquid effects.
+        for name, extra in WEATHER:
+            p = os.path.join(out, 'stills', 'weather_%s.png' % name)
+            print('[capture] weather', name)
+            render(binary, p, size, extra)
+            stills.append((p, 'weather: ' + name))
+
         # Demo-fidelity modes ported from the reference source.
         modes = [
             ('mode_lines', ['--lines']),
@@ -257,6 +277,17 @@ def main():
             montage(dye_paths, list(STYLES.keys()), tmp, tile='4x')
             run(['convert', tmp, '-resize', '1600x', '-quality', '92', '-strip',
                  os.path.join(out, 'dye_sheet.jpg')])
+            os.remove(tmp)
+
+        # Weather sheet (rain, puddles, lens droplets).
+        wx_paths = [os.path.join(out, 'stills', 'weather_%s.png' % n) for n, _ in WEATHER]
+        wx_paths = [p for p in wx_paths if os.path.exists(p)]
+        if have('montage') and wx_paths:
+            print('[capture] weather sheet')
+            tmp = os.path.join(out, 'weather_sheet.png')
+            montage(wx_paths, [n for n, _ in WEATHER], tmp, tile='4x')
+            run(['convert', tmp, '-resize', '1600x', '-quality', '92', '-strip',
+                 os.path.join(out, 'weather_sheet.jpg')])
             os.remove(tmp)
 
         # Hairstyle sheet.
@@ -323,6 +354,36 @@ def main():
                 montage(picks, ['t=%d/%d' % (i, len(pattern)) for i in
                                 range(0, len(pattern), max(1, len(pattern) // 6))][:len(picks)],
                         os.path.join(out, 'animation_strip.png'), tile='6x')
+
+        # A second, shorter clip of the weather system: rain streaks, ripples and
+        # the wind in the hair all advance with the frame clock.
+        rseq = os.path.join(out, 'frames_rain')
+        os.makedirs(rseq, exist_ok=True)
+        rn = max(12, n // 2)
+        rsz = max(240, asz * 3 // 4)
+        print('[capture] rain animation: %d frames @ %d px' % (rn, rsz))
+        run([binary, '--sequence', rseq, '--frames', str(rn), '--fps', str(args.fps),
+             '--anim', 'sweep', '--size', str(rsz), '--samples', '2',
+             '--preset', 'rain', '--wind', '0.8'])
+        rpat = [os.path.join(rseq, 'frame_%04d.png' % i) for i in range(rn)]
+        rpat = [p for p in rpat if os.path.exists(p)]
+        if have('convert') and rpat:
+            delay = max(2, int(round(100.0 / args.fps)))
+            run(['convert', '-delay', str(delay), '-loop', '0'] + rpat +
+                ['-colors', '256', '-layers', 'Optimize', '-dither', 'FloydSteinberg',
+                 os.path.join(out, 'rain.gif')])
+            try:
+                run(['convert', '-delay', str(delay), '-loop', '0'] + rpat +
+                    ['-colors', '256', '-quality', '82', '-define', 'webp:method=4',
+                     os.path.join(out, 'rain.webp')])
+            except SystemExit:
+                pass
+            rjpgs = []
+            for i, p in enumerate(rpat):
+                j = os.path.join(rseq, 'frame_%04d.jpg' % i)
+                run(['convert', p, '-quality', '92', j])
+                rjpgs.append(j)
+            write_mjpeg_avi(os.path.join(out, 'rain.avi'), rjpgs, args.fps)
 
     print('[capture] done -', out)
     return 0

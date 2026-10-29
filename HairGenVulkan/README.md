@@ -10,6 +10,14 @@ runtime and the shaders are pre-compiled to SPIR-V and embedded in the binary.
 
 | | |
 |---|---|
+| ![rain](media/stills/weather_rain.png) | ![storm](media/stills/weather_storm.png) |
+
+`media/weather_sheet.jpg` walks the whole weather system (dry, drizzle, rain,
+storm, sunset, noon, flooded puddles, wet close-up) and `media/rain.gif` /
+`media/rain.webp` / `media/rain.avi` are an animated clip of it.
+
+| | |
+|---|---|
 | ![hero](media/stills/hero.png) | ![back lit](media/stills/light_backlit.png) |
 
 Everything in the frame is GPU work: 10 000 hair strands × 32 segments
@@ -105,10 +113,59 @@ back-lit) and a Marschner-consistent sky ambient term. The head uses the demo's
 skin albedo with wrapped diffuse, GGX specular and hair-shadow transmittance.
 
 **Lighting & shadows.** Two 1 k² shadow maps per frame (object depth + hair
-depth for the transmittance model), a physically based single-scattering
-atmosphere baked into a 256×128 HDR sky table, procedural FBM cloud deck,
-image-based ambient from that table, sun disc, and a matte infinite ground plane
-that catches the ground shadow.
+depth for the transmittance model), image-based ambient from the sky table, sun
+disc, and an infinite ground plane that catches the ground shadow.
+
+**Sky: Preetham 1999.** The atmosphere is the analytic daylight model from
+Preetham, Shirley & Smits -- the same model three.js' `Sky.js` ships, ported to
+GLSL here (`shaders/lib/sky_model.glsl`): measured Rayleigh/Mie coefficients at
+680/550/450 nm, the `1/(cos θ + 0.15·(93.885 − θ)^−1.253)` optical path, the
+solar-zenith intensity curve with its earth-shadow cutoff, Rayleigh and
+Henyey-Greenstein phase functions. Because the radiance is physically scaled,
+the zenith goes blue, the horizon warms and a low sun reddens on its own; there
+is no hand-graded ramp. The table is baked at 256×128 and drives both the
+visible background and the IBL probe, with `--turbidity`, `--rayleigh`, `--mie`
+and `--mie-g` exposed.
+
+On top of it sits a cloud deck ported from the same reference: sinless gradient
+noise with a quintic fade, three drifting octaves, a coverage carve, Beer's law
+plus a powder term for the multiple scattering inside the cloud, a
+Henyey-Greenstein silver lining around the sun and an aerial-perspective blend
+into the horizon. It is composited in `background.frag` only, never baked into
+the irradiance table (a high-frequency probe put cloud-shaped blotches on the
+face).
+
+**Weather and liquids.** `--rain 0..1` turns on a full rain system:
+
+* **Rain streaks** -- 2 600 instanced billboards generated entirely in the
+  vertex shader (no vertex buffer: the instance index seeds a hash for the
+  column, fall speed, length and phase). Drops recycle through a 9 m cylinder
+  that follows the camera, get sheared by the wind, and are shaded as thin
+  glass rods (bright edges, dark core, sun glint, mist at distance).
+* **Rain veil** -- low-frequency sheets of water in `background.frag`, so the
+  air itself reads wet between the camera and the scene.
+* **Wet ground** -- a puddle mask from the noise volume darkens the stone to
+  42 %, mirrors the sky with a Schlick Fresnel falloff and adds sharp sun
+  glints. Every puddle is dimpled by **expanding rain-impact ripples**: one
+  drop per jittered grid cell, with a per-cell period, ring frequency and two
+  overlapping wavefronts, whose slope perturbs the reflection normal.
+* **Wet skin and wet hair** -- the water film on the face traps the diffuse
+  return and tightens the specular lobe; wet strands darken to 58 % and the
+  remaining highlight collapses into a hard gloss band, plus a wet rim.
+* **Lens droplets** -- two layers of grid-hashed beads in `post.frag` that
+  refract the frame beneath them, with a rim and a highlight, drifting down the
+  glass.
+* **Rain dims the world** -- the sun is cut by up to 55 %, the sky is dragged
+  towards grey, and the cloud coverage is pushed towards overcast, so a
+  downpour never happens under a clear blue sky.
+
+**Hair physics.** The strands are static geometry, so the dynamics are
+evaluated analytically in `hair.vert` as a damped, tapered pendulum pinned at
+the root: the free length moves with mass ~ `w^1.7` under a steady wind drag
+plus two travelling-wave gust octaves and a sideways flutter, and sags under
+`--gravity` (and under the extra weight of the water when it rains). Because the
+displacement is a function of `(strand id, w, time)`, the hair still casts a
+consistent shadow (the shadow pass runs the same vertex shader).
 
 **Post-processing.** HDR (RGBA16F) scene target → bloom prefilter + separable
 4-tap blur at quarter resolution → ACES filmic tonemap, exposure, vignette,
@@ -151,6 +208,7 @@ loads them, applies the demo's own centering transform and writes one binary blo
 | `noise.js` | 32³ RGB noise volume | kink / curl / frizz / fuzz carrier + cloud FBM (`noise3d`) |
 | `mtl.js` | `hairMaterial`: `a_f`, `R_dev`, `TT_dev`, `TRT_dev` | fibre absorption + LUT normalisation |
 | `shaders.js` | GLSL ES sources | ported to `shaders/*.vert|frag`, `lib/hair_shading.glsl` |
+| `three.js` `Sky.js` | Preetham analytic daylight + fBm cloud deck (external reference) | `lib/sky_model.glsl`, `lib/sky.glsl` |
 | `textures/july_{normal,height,ao,spec}.png` | head detail maps (1024², supplied separately) | `skin.normal` (height-derived, 512²), `skin.ao`, `skin.spec` |
 | `materials/rosa/*` | the rosa Marschner LUT set | `mtl.rosa.*` - `--material rosa` |
 
@@ -183,6 +241,10 @@ hairgen --out render.png [options]
   --rot R --tilt R --dist D --fov F
   --sun-rot R --sun-tilt R --sun-intensity F --exposure F --bloom F
   --clouds F --vignette F --shadow-res N
+  --turbidity F --rayleigh F --mie F --mie-g F    Preetham atmosphere
+  --rain F --wetness F --wind F --wind-dir R --gravity F --puddles F
+  --lens-drops F                       weather / liquid effects
+  --preset dry|drizzle|rain|storm|sunset|noon
   --no-hair --no-head --no-ground
   --lines | --render-mode 0|1          strand lines (demo default) vs ribbons
   --root-samples                       explicit root table from the demo
@@ -206,7 +268,7 @@ left, scrollable parameter column on the right, styled after the demo's
 
 | endpoint | purpose |
 |---|---|
-| `POST /params` | JSON `{ "fuzz": 0.12, "renderMode": 0, "rootSamples": true, "collide": false, "showHairMesh": true, ... }` scene update |
+| `POST /params` | JSON `{ "fuzz": 0.12, "rain": 0.6, "wind": 0.4, "turbidity": 3.0, "renderMode": 0, ... }` scene update |
 | `GET /stream` | MJPEG preview of live GPU frames |
 | `GET /snapshot.png` | single frame as PNG |
 | `GET /scene` | current camera/hair values as JSON |
@@ -234,13 +296,15 @@ meson test -C build          # add VK_ICD_FILENAMES=... to include the render te
 
 | file | contents |
 |---|---|
-| `media/stills/*.png` | hero shot, 8 dye swatches, 8 hairstyles, 4 lighting setups, 6 control sweeps, 5 mode stills |
+| `media/stills/*.png` | hero shot, 8 dye swatches, 8 hairstyles, 4 lighting setups, 6 control sweeps, 5 mode stills, 8 weather stills |
 | `media/stills/mode_*.png` | lines vs ribbons, root samples, hair-mesh cage, no-collide |
 | `media/mode_comparison.png` | the four modes side by side |
 | `media/hero_1536.png` | 1536² hero render |
 | `media/contact_sheet.jpg` | 12-up overview (hero + dye palette + hairstyles) |
 | `media/dye_sheet.jpg` | the full dye palette on one sheet |
 | `media/aa_off.png`, `media/aa_on.png` | 1× vs 4× MSAA |
+| `media/weather_sheet.jpg` | dry / drizzle / rain / storm / sunset / noon / puddles / close-up |
+| `media/rain.gif`, `media/rain.webp`, `media/rain.avi` | the rain system in motion |
 | `media/orbit.gif` | 40-frame animated GIF (480², 20 fps) |
 | `media/orbit.avi` | MJPEG video of the same animation |
 | `media/animation_strip.png` | 6 frames from the turntable |
@@ -252,7 +316,8 @@ src/            main.cpp (CLI), renderer.{hpp,cpp}, vk_util (device/queues/image
                 pipelines/descriptors), vk_loader (runtime loader + ICD scan),
                 assets (bundle reader), png (writer), web (preview server), math
 shaders/        GLSL 450 sources + lib/common.glsl, lib/shadow.glsl,
-                lib/hair_shading.glsl, lib/sky.glsl  ->  src/shaders_generated.hpp
+                lib/hair_shading.glsl, lib/sky_model.glsl (Preetham),
+                lib/sky.glsl (clouds + rain veil)  ->  src/shaders_generated.hpp
                 (edit a shader, then `ninja -C build shaders && ninja -C build`;
                  the `shaders-check` target fails the build on a stale header)
 tools/          export_assets.js, compile_shaders.py, capture.py
@@ -288,7 +353,8 @@ sky LUT bake (256×128) ──┘        │  sky · ground · head · hair
 * The demo has no background or floor; both are new (baked sky + shadow-catching
   ground plane), as is the bloom/tonemap chain.
 * The demo's cloud pass sampled the 32³ noise volume directly, which reads as
-  large trilinear blobs at sky scale; the deck here uses FBM value noise instead.
+  large trilinear blobs at sky scale; the deck here uses gradient-noise FBM
+  (ported from three.js' `Sky.js`) with Beer/powder shading and a silver lining.
 * `july_colliders.js` is consumed by the demo's physics solver, which is itself
   disabled (`simulator.init()` returns immediately). Here the same spheres are
   applied as a push-out in the hair vertex shader, so they also affect the
@@ -297,5 +363,13 @@ sky LUT bake (256×128) ──┘        │  sky · ground · head · hair
   Above that, roots are reused cyclically with a small per-strand offset, which
   keeps the demo's root distribution while allowing dense renders.
 * The `HGEN_SKIP=passname ...` environment variable skips render passes
-  (`shadowpass`, `skypass`, `scenepass`, `bloompass`, `postpass`, `copy`) and is
-  handy when bisecting driver problems.
+  (`background`, `grounddraw`, `headdraw`, `hairdraw`, `rain`, `simplesky`) and
+  is handy when bisecting driver problems. `HGEN_DBG=N` replaces the head
+  shading with a debug channel (11 ao, 13 normal map, 20 world normal, 22
+  albedo, 31 ambient, 32 diffuse, 33 specular, 38 geometric normal, ...).
+* `HGEN_NOCULL=1` draws the head two-sided (the default culls the inside of the
+  scan's open shell, which used to show through as a pale flap on the cheek).
+* One llvmpipe quirk worth knowing: a fragment shader that `discard`s inside an
+  alpha-blended, 4× MSAA pass corrupted whole tiles on lavapipe. The rain pass
+  therefore writes alpha 0 instead of discarding, which is a no-op under the
+  blend function it uses.

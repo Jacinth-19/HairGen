@@ -118,6 +118,7 @@ class Renderer {
   VkPipeline p_hairmesh_curves_ = VK_NULL_HANDLE, p_hairmesh_rects_ = VK_NULL_HANDLE;
   VkPipeline p_obj_shadow_ = VK_NULL_HANDLE, p_hair_shadow_ = VK_NULL_HANDLE;
   VkPipeline p_prefilter_ = VK_NULL_HANDLE, p_blur_ = VK_NULL_HANDLE, p_post_ = VK_NULL_HANDLE;
+  VkPipeline p_rain_ = VK_NULL_HANDLE;   // instanced procedural rain streaks
 
   // geometry
   Buffer ubo_, hair_vb_, head_vb_, head_ib_, bust_vb_, bust_ib_, readback_;

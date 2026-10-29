@@ -26,6 +26,9 @@ layout(set = 0, binding = 0) uniform FrameBlock {
   vec4 misc;         // groundY, showGround, debug view id, frame index
   vec4 dye;          // xyz = dye colour (linear), w = dye strength
   vec4 dye2;         // rootDarken, perStrandVariation, sheen, unused
+  vec4 sky2;         // turbidity, rayleigh, mie, mieG  (Preetham atmosphere)
+  vec4 weather;      // rain, wetness, wind strength, wind azimuth
+  vec4 weather2;     // hair gravity, puddles, lens droplets, animation time
 } frame;
 
 layout(set = 0, binding = 1) uniform sampler2DShadow objShadMap;

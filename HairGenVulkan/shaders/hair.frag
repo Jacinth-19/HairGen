@@ -38,6 +38,11 @@ void main() {
 
   // ---- 1. Marschner ----------------------------------------------------
   vec3 color = ShadeHair(vLightPos, t, v, vInstance);
+  // Dense strand masses block the direct beam almost completely (that is the
+  // point of the multiple-scattering shadow model), but a real head of hair is
+  // never black on top: light keeps bouncing between the fibres. Lift the
+  // deeply shadowed part towards the fibre's own tint.
+  color += frame.fiber.rgb * 0.16;
 
   // ---- dye -------------------------------------------------------------
   // Unit-luma hue of the target colour: multiplying by it recolours the fibre
@@ -69,7 +74,7 @@ void main() {
     float kkSpec = pow(sqrt(max(0.0, 1.0 - TdH * TdH)), 96.0);
     vec3 sunC = vec3(1.0, 0.965, 0.93) * frame.skyRef.x * 1.35;
     // The wrap term is tinted by the dye; the highlight stays white.
-    color += (mix(vec3(1.0), dyeHue * dyeDark, 0.85) * 0.30 * kkDiff + vec3(1.0) * kkSpec * 0.75) * sunC * lit;
+    color += (mix(vec3(1.0), dyeHue * dyeDark, 0.85) * 0.28 * kkDiff + vec3(1.0) * kkSpec * 0.50) * sunC * lit;
   }
 
   // ---- 3. dye ----------------------------------------------------------
@@ -98,7 +103,23 @@ void main() {
 
   // Grazing strands catch the sky: this is what separates the silhouette.
   float rim = pow(1.0 - clamp(abs(dot(nApprox, v)), 0.0, 1.0), 3.0);
-  color += (skyAmbient(nApprox, 0.3) + vec3(0.22)) * tint * rim * 0.50 * smoothstep(0.15, 1.0, vW);
+  color += (skyAmbient(nApprox, 0.3) * 1.10 + vec3(0.16)) * tint * rim * 0.55 * smoothstep(0.15, 1.0, vW);
+
+  // ---- 6. rain ---------------------------------------------------------
+  // Wet hair darkens strongly (the water fills the gaps between cuticle scales
+  // and kills the internal scattering) and the remaining highlight becomes a
+  // tight, bright band: that combination is the classic "just came in from the
+  // rain" look.
+  float wet = clamp(frame.weather.y, 0.0, 1.0);
+  if (wet > 0.001) {
+    color *= mix(1.0, 0.58, wet);
+    vec3 Lv = normalize(frame.lightDirView.xyz);
+    vec3 hWet = normalize(Lv + v);
+    float tWet = pow(sqrt(max(0.0, 1.0 - dot(t, hWet) * dot(t, hWet))), 220.0);
+    color += vec3(1.0, 0.99, 0.97) * tWet * wet * 1.25;
+    // Beaded droplets: the strand silhouette picks up a wet rim.
+    color += skyAmbient(nApprox, 0.15) * tint * wet * rim * 0.55;
+  }
 
   // ---- tone ------------------------------------------------------------
   // Soft shoulder instead of a clip: the fibre radiance has a long tail.

@@ -39,8 +39,11 @@ struct FrameUbo {
   float misc[4];
   float dye[4];
   float dye2[4];
+  float sky2[4];     // turbidity, rayleigh, mie, mieG
+  float weather[4];  // rain, wetness, wind, windDir
+  float weather2[4]; // gravity, puddles, lensDrops, time
 };
-static_assert(sizeof(FrameUbo) == (16 * 5 + 4 * 16) * 4, "unexpected UBO packing");
+static_assert(sizeof(FrameUbo) == (16 * 5 + 4 * 19) * 4, "unexpected UBO packing");
 
 void copy_mat(float* dst, const mat4& m) { std::memcpy(dst, m.m, sizeof(float) * 16); }
 
@@ -543,6 +546,7 @@ Renderer::~Renderer() {
   destroy_pipeline(p_prefilter_);
   destroy_pipeline(p_blur_);
   destroy_pipeline(p_post_);
+  destroy_pipeline(p_rain_);
   auto destroy_fb = [&](VkFramebuffer& f) {
     if (f) gpu_.api.vkDestroyFramebuffer(gpu_.device, f, nullptr);
     f = VK_NULL_HANDLE;
@@ -902,9 +906,12 @@ void Renderer::create_pipelines() {
         {2, 0, VK_FORMAT_R32G32_SFLOAT, 24},
     };
     // The bust is a torn triangle strip: parts of it face away from any given
-    // viewpoint, so both sides must be shaded (the shader flips the normal on
-    // back faces, as the web demo's fs_obj does).
-    p.cull = VK_CULL_MODE_NONE;
+    // viewpoint, so both sides are shaded (the shader flips the normal on back
+    // faces, as the web demo's fs_obj does). Winding is repaired at export time
+    // (see tools/export_assets.js), so the *inside* of the scan's open shell is
+    // culled instead: with both sides drawn, the far wall of the shell showed
+    // through as the flat pale "flap" across the cheek.
+    p.cull = std::getenv("HGEN_NOCULL") ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
     if (std::getenv("HGEN_NODEPTH")) { p.depth_test = false; p.depth_write = false; }
     p_head_ = create_pipeline(gpu_, p);
   }
@@ -1019,6 +1026,24 @@ void Renderer::create_pipelines() {
     p_hairmesh_curves_ = create_pipeline(gpu_, p);
     p_hairmesh_rects_ = create_pipeline(gpu_, p);
   }
+  // rain streaks: instanced, no vertex buffer (positions come from the index)
+  {
+    PipelineDesc p = d;
+    p.layout = layout_full_;
+    p.render_pass = scene_pass_;
+    p.sample_count = samples_;
+    p.vert_spv = reinterpret_cast<const char*>(shader("rain.vert")->data);
+    p.vert_size = shader("rain.vert")->size;
+    p.frag_spv = reinterpret_cast<const char*>(shader("rain.frag")->data);
+    p.frag_size = shader("rain.frag")->size;
+    p.cull = VK_CULL_MODE_NONE;
+    p.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    p.depth_test = true;
+    p.depth_write = false;
+    p.blend = true;    // additive-ish alpha: streaks are translucent water
+    p_rain_ = create_pipeline(gpu_, p);
+  }
+
   // bloom / post
   {
     PipelineDesc p = d;
@@ -1212,6 +1237,18 @@ void Renderer::update_frame_ubo(double time, uint32_t frame_index) {
   u.dye[2] = scene_.hair.dye[2]; u.dye[3] = scene_.hair.dye_strength;
   u.dye2[0] = scene_.hair.root_darken; u.dye2[1] = scene_.hair.color_variation;
   u.dye2[2] = scene_.hair.sheen; u.dye2[3] = 0.0f;
+
+  const SkySettings& sk = scene_.sky;
+  u.sky2[0] = sk.turbidity; u.sky2[1] = sk.rayleigh; u.sky2[2] = sk.mie; u.sky2[3] = sk.mie_g;
+  const WeatherSettings& w = scene_.weather;
+  u.weather[0] = w.rain;
+  u.weather[1] = w.wetness > 0.0f ? w.wetness : w.rain;   // wet surfaces track the rain
+  u.weather[2] = w.wind;
+  u.weather[3] = w.wind_dir;
+  u.weather2[0] = w.gravity;
+  u.weather2[1] = w.puddles;
+  u.weather2[2] = w.lens_drops > 0.0f ? w.lens_drops : w.rain;
+  u.weather2[3] = float(time) * w.speed;
   u.misc[3] = float(frame_index);
 
   std::memcpy(ubo_.mapped, &u, sizeof(u));
@@ -1429,6 +1466,17 @@ void Renderer::pass_scene(VkCommandBuffer cmd) {
       gpu_.api.vkCmdDraw(cmd, hairmesh_rect_verts_, 1, 0, 0);
     }
   }
+  // rain streaks last: translucent geometry that must blend over everything
+  if (scene_.weather.rain > 0.001f && !skip_pass("rain")) {
+    gpu_.api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p_rain_);
+    gpu_.api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_full_, 0, 1, &set_main_, 0,
+                                     nullptr);
+    // 6 vertices per streak, one instance per drop. Density scales with the
+    // rain amount so light drizzle has sparse, visible drops.
+    const int count = int(2600 * (0.25f + 0.75f * std::min(1.0f, scene_.weather.rain)));
+    gpu_.api.vkCmdDraw(cmd, 6, uint32_t(count), 0, 0);
+  }
+
   gpu_.api.vkCmdEndRenderPass(cmd);
 }
 
