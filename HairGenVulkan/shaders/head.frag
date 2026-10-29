@@ -57,9 +57,9 @@ void main() {
       // full strength it sparkles under the sun. Keep the low frequencies and
       // damp the tangents so the relief reads as skin, not gravel.
       vec3 nt = textureGrad(skinNormal, uv, duvdx, duvdy).xyz * 2.0 - 1.0;
-      nt.xy *= 0.35;
+      nt.xy *= 0.16;
       vec3 mapped = normalize(mat3(t, b, n) * normalize(nt));
-      n = normalize(mix(n, mapped, 0.55));
+      n = normalize(mix(n, mapped, 0.30));
     }
   }
   vec3 w_o = normalize(frame.camPos.xyz - vWorld);
@@ -110,8 +110,13 @@ void main() {
   // frequency so our sun and sky shape the form, then put back a measured
   // linear skin level so the level stays in range under the scaled sun.
   vec3 lowFreq = pow(max(textureGrad(skinFlat, uv, duvdx, duvdy).rgb, vec3(0.06)), vec3(2.2));
-  albedo = albedo / max(lowFreq, vec3(0.02)) * vec3(0.30, 0.185, 0.145);
-  albedo = clamp(albedo, vec3(0.02), vec3(0.95));
+  // The photo is only ~1k across a whole face, so dividing by the blurred copy
+  // amplifies pore-scale noise into grain. Keep the ratio in a narrow band and
+  // pull it towards unity: enough to keep lips, brows and freckles, not enough
+  // to read as dirt (or as dithering) at 700 px.
+  vec3 ratio = clamp(albedo / max(lowFreq, vec3(0.02)), vec3(0.55), vec3(1.55));
+  ratio = mix(vec3(1.0), ratio, 0.30);
+  albedo = ratio * vec3(0.30, 0.185, 0.145);
   // A touch of the photo's own hue survives in the lips, brows and shadow.
   albedo = mix(albedo, pow(max(photo, vec3(0.0)), vec3(2.2)) * 1.6, 0.35);
   // Skin scatters red; nudge the ratio slightly warm without going terracotta.
@@ -197,9 +202,9 @@ void main() {
   vec3 h = normalize(w_o + sunDir);
   float NoH = max(dot(n, h), 0.0);
   float VoH = max(dot(w_o, h), 0.0);
-  float a = 0.42;
+  float a = 0.58;
   float F = 0.028 + 0.972 * pow(1.0 - VoH, 5.0);
-  float spec = distributionGGX(NoH, a) * F * ndl * 0.16;
+  float spec = distributionGGX(NoH, a) * F * ndl * 0.10;
   // The specular mask marks the oily/lip/nail areas; it should modulate the
   // skin highlight rather than be a flat scalar.
   float specMask = frame.misc.z > 16.5 && frame.misc.z < 17.5 ? 1.0

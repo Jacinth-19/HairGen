@@ -282,16 +282,14 @@ int main(int argc, char** argv) {
         scene.weather.lens_drops = 0.9f; scene.sky.turbidity = 5.0f;
         scene.sky.exposure = 1.05f; scene.weather.gravity = 0.45f;
       } else if (s == "sunset") {
-        // sun_tilt is negative-up: -0.16 rad puts the sun ~9 degrees above the
-        // horizon, where the Preetham model reddens and the earth-shadow cutoff
-        // starts to eat into the intensity.
-        scene.sky.sun_tilt = -0.16f; scene.sky.turbidity = 5.0f;
+        // sun_tilt is negative-up. Golden hour: the sun is still ~22 degrees up, so the key reads warm
+        // and the sky ramps from gold at the horizon to deep blue overhead.
+        // Placing it any lower put the solar disc in frame and the Preetham
+        // model's sunset boost blew the whole background to white.
+        scene.sky.sun_tilt = -0.38f; scene.sky.turbidity = 3.5f;
         scene.sky.cloud_coverage = 0.40f; scene.weather.wind = 0.3f;
-        scene.sky.exposure = 1.9f; scene.sky.bloom = 0.35f;
-        // Put the low sun in frame (the camera looks towards +Z): a sunset you
-        // cannot see is just a dim blue sky, so the key light becomes a rim and
-        // the fire is behind the bust where it belongs.
-        scene.sky.sun_rot = -0.55f;
+        scene.sky.exposure = 1.3f; scene.sky.bloom = 0.35f;
+        scene.sky.sun_rot = 2.1f;
       } else if (s == "noon") {
         scene.sky.sun_tilt = -1.05f; scene.sky.turbidity = 2.0f;
         scene.sky.cloud_coverage = 0.20f; scene.sky.exposure = 0.62f;
