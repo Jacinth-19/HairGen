@@ -204,6 +204,20 @@ def main():
             render(binary, p, size, ['--samples', '4'] + extra)
             stills.append((p, 'control: ' + name))
 
+        # Demo-fidelity modes ported from the reference source.
+        modes = [
+            ('mode_lines', ['--lines']),
+            ('mode_ribbons', ['--render-mode', '1']),
+            ('mode_root_samples', ['--root-samples']),
+            ('mode_hairmesh', ['--show-hairmesh', '--hair-count', '6000']),
+            ('mode_no_collide', ['--no-collide']),
+        ]
+        for name, extra in modes:
+            p = os.path.join(out, 'stills', name + '.png')
+            print('[capture]', name)
+            render(binary, p, size, ['--samples', '4'] + extra)
+            stills.append((p, name))
+
         # A high resolution hero for print / README.
         render(binary, os.path.join(out, 'hero_1536.png'), 1536, ['--samples', '4'])
         # Nice-to-have: anti-aliasing comparison (1x vs 4x MSAA crop).

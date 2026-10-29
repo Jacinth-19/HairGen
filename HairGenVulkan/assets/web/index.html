@@ -20,6 +20,22 @@
       <label><input type="checkbox" id="showHair" checked> show hair</label>
       <label><input type="checkbox" id="showGround" checked> ground</label>
     </div>
+    <!-- demo fidelity: the source demo's render mode, explicit root table,
+         head colliders and hair-mesh cage overlay -->
+    <div class="cRow cChecks">
+      <label><input type="checkbox" id="rootSamples"> root samples</label>
+      <label><input type="checkbox" id="collide" checked> collide</label>
+      <label><input type="checkbox" id="showHairMesh"> show hair mesh</label>
+    </div>
+    <div class="cRow">
+      <span class="cName">render mode</span>
+      <span class="cField">
+        <select id="renderMode">
+          <option value="1">strips (ribbons)</option>
+          <option value="0">lines</option>
+        </select>
+      </span>
+    </div>
 
     <div class="cRow">
       <span class="cName">hair color</span>

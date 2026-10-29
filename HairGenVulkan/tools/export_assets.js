@@ -115,7 +115,7 @@ function loadImage(file) {
 
 /* ------------------------------------------------------- demo data load */
 
-const DEMO_FILES = ['july-low.js', 'july_hairmesh3.js', 'july_rootsamples.js', 'noise.js'];
+const DEMO_FILES = ['july-low.js', 'july_hairmesh3.js', 'july_rootsamples.js', 'july_colliders.js', 'noise.js'];
 for (const f of DEMO_FILES) {
   const src = fs.readFileSync(path.join(SRC, f), 'utf8');
   // The demo files are plain `name = [...]` assignments.
@@ -571,6 +571,45 @@ for (let i = 0; i < hairmesh_bundleLayout.length; ++i)
 const clump = renderClumpTexture();
 addChunk('hair.clump', CLUMP_RES, CLUMP_RES, 1, 4, 0, u8(clump));
 addChunk('hair.bundles', bundleST.length / 2, 1, 1, 2, 2, f32(bundleST));
+
+/* --------------------------------------- root samples (hair strip roots) */
+// july_rootsamples.js: an explicit distribution of strip roots over the
+// bundles (bundID, s, t, rot). Group by bundle and emit an exclusive prefix
+// table so the renderer can draw one instance range per bundle.
+const rootBucket = Array.from({ length: hairmesh_bundleLayout.length }, () => []);
+for (const r of root_samples) rootBucket[r.bundID].push([r.s, r.t]);
+const rootST = [];
+const rootBase = [];
+const rootCount = [];
+for (let b = 0; b < rootBucket.length; ++b) {
+  rootBase.push(rootST.length / 2);
+  rootCount.push(rootBucket[b].length);
+  for (const [s, t] of rootBucket[b]) rootST.push(s, t);
+}
+console.log(`  root samples: ${root_samples.length} roots over ${hairmesh_bundleLayout.length} bundles`);
+addChunk('roots.st', rootST.length / 2, 1, 1, 2, 2, f32(rootST));
+addChunk('roots.base', rootBase.length, 1, 1, 1, 3, u32(rootBase));
+addChunk('roots.count', rootCount.length, 1, 1, 1, 3, u32(rootCount));
+
+/* ------------------------------------------------- colliders (hair vs head) */
+// july_colliders.js is in raw model space; apply the exact same centering
+// transform the demo applies before uploading to the simulator. Each entry is
+// either one sphere (xyz, r) or a pair of spheres (xyz, r, xyz, r).
+const COLLIDER_STRIDE = 8;
+const colliderData = new Float32Array(obj_colliders.length * COLLIDER_STRIDE);
+let colliderCount = 0;
+for (const c of obj_colliders) {
+  const single = c.length <= 4;
+  const p0 = xform([c[0], c[1], c[2]]);
+  const r0 = c[3] * scale;
+  const p1 = single ? p0 : xform([c[4], c[5], c[6]]);
+  const r1 = single ? 0 : c[7] * scale;
+  const o = colliderCount * COLLIDER_STRIDE;
+  colliderData.set([p0[0], p0[1], p0[2], r0, p1[0], p1[1], p1[2], r1], o);
+  colliderCount++;
+}
+console.log(`  colliders: ${colliderCount} capsules/spheres`);
+addChunk('colliders', colliderCount, 1, 1, COLLIDER_STRIDE, 2, f32(colliderData));
 
 /* -------------------------------------------------- validate the clump map */
 

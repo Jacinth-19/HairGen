@@ -164,6 +164,12 @@ void apply_params(Scene& s, const std::string& body) {
   if (json_bool(body, "showHair", b)) s.hair.show_hair = b;
   if (json_bool(body, "showHead", b)) s.hair.show_head = b;
   if (json_bool(body, "showGround", b)) s.sky.show_ground = b;
+  // demo fidelity controls: render mode, explicit roots, collider push-out,
+  // and the "show hair mesh" cage overlay.
+  if (json_number(body, "renderMode", f)) s.hair.render_mode = int(f);
+  if (json_bool(body, "rootSamples", b)) s.hair.use_root_samples = b;
+  if (json_bool(body, "collide", b)) s.hair.collide = b;
+  if (json_bool(body, "showHairMesh", b)) s.hair.show_hairmesh = b;
 }
 
 }  // namespace
@@ -339,10 +345,13 @@ int WebServer::run() {
         char json[1024];
         snprintf(json, sizeof(json),
                  "{\"rot\":%.4f,\"tilt\":%.4f,\"dist\":%.4f,\"fuzz\":%.4f,"
-                 "\"clump\":%.4f,\"curl\":%.4f,\"width\":%d,\"height\":%d}",
+                 "\"clump\":%.4f,\"curl\":%.4f,\"width\":%d,\"height\":%d,"
+                 "\"renderMode\":%d,\"rootSamples\":%s,\"collide\":%s,\"showHairMesh\":%s}",
                  scene.camera.rot, scene.camera.tilt, scene.camera.dist, scene.hair.fuzz_amount,
                  scene.hair.clump_percent, scene.hair.curl_amount, s.renderer.width(),
-                 s.renderer.height());
+                 s.renderer.height(), scene.hair.render_mode,
+                 scene.hair.use_root_samples ? "true" : "false", scene.hair.collide ? "true" : "false",
+                 scene.hair.show_hairmesh ? "true" : "false");
         send_text(cfd, "200 OK", "application/json", json);
       } else if (path == "/snapshot.png") {
         std::vector<uint8_t> data = render_frame(s, false);

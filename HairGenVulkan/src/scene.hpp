@@ -22,6 +22,10 @@ struct CameraSettings {
 struct HairSettings {
   bool show_hair = true;
   bool show_head = true;
+  bool show_hairmesh = false;  // "show hair mesh": draw the control cage (demo toggle)
+  int render_mode = 1;         // 0 = lines (the demo's default), 1 = ribbons
+  bool use_root_samples = false;  // roots from july_rootsamples.js instead of procedural
+  bool collide = true;            // push strands out of the july_colliders.js spheres
 
   float density = 1.0f;       // shadow density ("shadows" slider)
   float length_var = 0.1f;

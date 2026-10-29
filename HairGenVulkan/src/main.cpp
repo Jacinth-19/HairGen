@@ -44,6 +44,11 @@ void usage() {
       "  --frizz F --frizz-freq F --kink F --kink-freq F --fuzz F\n"
       "  --density F --length-var F --fiber-r/-g/-b F\n"
       "  --no-hair --no-head --no-ground\n"
+      "  --lines               render mode 0: strand centre lines (demo default)\n"
+      "  --render-mode N       0 = lines, 1 = ribbons (default 1)\n"
+      "  --root-samples        use the demo's explicit root table (july_rootsamples.js)\n"
+      "  --no-collide          disable the head collider push-out (july_colliders.js)\n"
+      "  --show-hairmesh       overlay the hair-mesh control cage\n"
       "\n"
       "Camera / lighting\n"
       "  --rot R --tilt R --dist D --fov F\n"
@@ -170,6 +175,12 @@ int main(int argc, char** argv) {
     else if (match(a, "--fiber-g")) scene.hair.a_f[1] = float(std::atof(next(a).c_str()));
     else if (match(a, "--fiber-b")) scene.hair.a_f[2] = float(std::atof(next(a).c_str()));
     else if (match(a, "--length-var")) scene.hair.length_var = float(std::atof(next(a).c_str()));
+    else if (match(a, "--render-mode")) scene.hair.render_mode = std::atoi(next(a).c_str());
+    else if (match(a, "--lines")) scene.hair.render_mode = 0;
+    else if (match(a, "--root-samples")) scene.hair.use_root_samples = true;
+    else if (match(a, "--no-root-samples")) scene.hair.use_root_samples = false;
+    else if (match(a, "--no-collide")) scene.hair.collide = false;
+    else if (match(a, "--show-hairmesh")) scene.hair.show_hairmesh = true;
     else if (match(a, "--no-hair")) scene.hair.show_hair = false;
     else if (match(a, "--no-head")) scene.hair.show_head = false;
     else if (match(a, "--no-ground")) scene.sky.show_ground = false;

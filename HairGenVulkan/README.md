@@ -78,7 +78,35 @@ and wheel in the web panel, and `--anim orbit|sweep|light` for turntables.
 
 **Controls.** Exactly the demo's panel - hair colour presets, `shadows`
 (density), `length var.`, and the **Fuzz / Frizz / Kink / Clump / Curl** groups
-with the same parameter names, ranges and exponent sliders.
+with the same parameter names, ranges and exponent sliders - plus the demo's
+render-mode switch, its root-sample and collider toggles and the "show hair
+mesh" cage overlay.
+
+**Render modes.** `strips` draws screen-space ribbons; `lines` (the demo's
+initial mode, `renderMode = 0`) draws each strand as a lit polyline. Both run
+the same vertex-shading path, so the styling parameters affect them identically.
+
+**`show hair mesh`.** The demo's debug view is reproduced from the exported
+`hairmesh.pos` volume: one cyan curve per bundle (the five level control points
+of the hair-mesh graph) plus the layout-cell outlines.
+
+## Source coverage
+
+Every asset file in the reference demo is consumed by the port. `tools/export_assets.js`
+loads them, applies the demo's own centering transform and writes one binary blob.
+
+| demo file | contents | used as |
+|---|---|---|
+| `july-low.js` | 59 156 lines: `obj_vert_pos`, `obj_normals`, `obj_texCoords`, `obj_indices` | head mesh (`head.*` chunks) |
+| `july_hairmesh3.js` | `hairmesh_verts`, `hairmesh_bundles`, `hairmesh_bundleLayout`, `hairmesh_texCoords`, `_bundleTexCoords` | 7×6×13 hair-mesh volume + 22 bundle roots (`hairmesh.*`, `hair.bundles`) |
+| `july_rootsamples.js` | 1 000 explicit strip roots `(bundID, s, t, rot)` | root table (`roots.st`, `roots.base`, `roots.count`) - `--root-samples` |
+| `july_colliders.js` | 9 head spheres, two spheres each | collider push-out in `hair.vert` - `--no-collide` disables |
+| `noise.js` | 32³ RGB noise volume | kink / curl / frizz / fuzz carrier + cloud FBM (`noise3d`) |
+| `mtl.js` | `hairMaterial`: `a_f`, `R_dev`, `TT_dev`, `TRT_dev` | fibre absorption + LUT normalisation |
+| `shaders.js` | GLSL ES sources | ported to `shaders/*.vert|frag`, `lib/hair_shading.glsl` |
+
+`root.rot` is exported but unused: in the demo it only feeds the (disabled)
+simulation path; `obj_vert_nor`/`obj_vert_tex` are unused by the demo itself.
 
 ## Usage
 
@@ -95,6 +123,10 @@ hairgen --out render.png [options]
   --sun-rot R --sun-tilt R --sun-intensity F --exposure F --bloom F
   --clouds F --vignette F --shadow-res N
   --no-hair --no-head --no-ground
+  --lines | --render-mode 0|1          strand lines (demo default) vs ribbons
+  --root-samples                       explicit root table from the demo
+  --no-collide                         disable head collider push-out
+  --show-hairmesh                      overlay the hair-mesh cage
   --serve PORT        interactive panel (see below)
   --list-devices      print the Vulkan adapters
 ```
@@ -113,7 +145,7 @@ left, scrollable parameter column on the right, styled after the demo's
 
 | endpoint | purpose |
 |---|---|
-| `POST /params` | JSON `{ "fuzz": 0.12, ... }` scene update |
+| `POST /params` | JSON `{ "fuzz": 0.12, "renderMode": 0, "rootSamples": true, "collide": false, "showHairMesh": true, ... }` scene update |
 | `GET /stream` | MJPEG preview of live GPU frames |
 | `GET /snapshot.png` | single frame as PNG |
 | `GET /scene` | current camera/hair values as JSON |
@@ -141,7 +173,8 @@ meson test -C build          # add VK_ICD_FILENAMES=... to include the render te
 
 | file | contents |
 |---|---|
-| `media/stills/*.png` | hero shot, 5 hair styles, 4 lighting setups, 6 control sweeps |
+| `media/stills/*.png` | hero shot, 5 hair styles, 4 lighting setups, 6 control sweeps, 5 mode stills |
+| `media/stills/mode_*.png` | lines vs ribbons, root samples, hair-mesh cage, no-collide |
 | `media/hero_1536.png` | 1536² hero render |
 | `media/contact_sheet.jpg` | 12-up overview |
 | `media/aa_off.png`, `media/aa_on.png` | 1× vs 4× MSAA |
@@ -191,6 +224,13 @@ sky LUT bake (256×128) ──┘        │  sky · ground · head · hair
   ground plane), as is the bloom/tonemap chain.
 * The demo's cloud pass sampled the 32³ noise volume directly, which reads as
   large trilinear blobs at sky scale; the deck here uses FBM value noise instead.
+* `july_colliders.js` is consumed by the demo's physics solver, which is itself
+  disabled (`simulator.init()` returns immediately). Here the same spheres are
+  applied as a push-out in the hair vertex shader, so they also affect the
+  static render.
+* `july_rootsamples.js` holds one root per strip (the demo draws at most 1 000).
+  Above that, roots are reused cyclically with a small per-strand offset, which
+  keeps the demo's root distribution while allowing dense renders.
 * The `HGEN_SKIP=passname ...` environment variable skips render passes
   (`shadowpass`, `skypass`, `scenepass`, `bloompass`, `postpass`, `copy`) and is
   handy when bisecting driver problems.

@@ -1,6 +1,7 @@
 #include "renderer.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -124,7 +125,7 @@ void write_descriptors(Gpu& gpu, const std::vector<DescriptorWrite>& writes) {
     wsx.dstBinding = w.binding;
     wsx.descriptorCount = 1;
     wsx.descriptorType = w.type;
-    if (w.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+    if (w.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || w.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
       VkDescriptorBufferInfo bi{};
       bi.buffer = w.buffer;
       bi.offset = w.offset;
@@ -407,6 +408,36 @@ Renderer::Renderer(Gpu& gpu, const Assets& assets, const Scene& scene, int width
     for (uint32_t i = 0; i < bundle_count_ * 2; ++i) bundle_st_[i] = b.float_at(i);
   }
 
+  // ---- explicit root samples (july_rootsamples.js)
+  {
+    const AssetChunk& st = assets_.get("roots.st");
+    const AssetChunk& base = assets_.get("roots.base");
+    const AssetChunk& count = assets_.get("roots.count");
+    root_base_.resize(bundle_count_);
+    root_count_.resize(bundle_count_);
+    for (uint32_t b = 0; b < bundle_count_; ++b) {
+      root_base_[b] = uint32_t(base.float_at(b));
+      root_count_[b] = uint32_t(count.float_at(b));
+    }
+    const size_t n = st.width * 2;
+    std::vector<float> stv(n);
+    for (size_t i = 0; i < n; ++i) stv[i] = st.float_at(i);
+    root_buf_ = gpu_.create_buffer(n * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                   stv.data());
+  }
+
+  // ---- head colliders (july_colliders.js)
+  {
+    const AssetChunk& c = assets_.get("colliders");
+    collider_count_ = c.width;
+    std::vector<float> cv(size_t(collider_count_) * c.channels);
+    for (size_t i = 0; i < cv.size(); ++i) cv[i] = c.float_at(i);
+    collider_buf_ = gpu_.create_buffer(cv.size() * 4, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                       cv.data());
+  }
+
   // ---- uniform buffer + readback
   ubo_ = gpu_.create_buffer(sizeof(FrameUbo), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -414,6 +445,7 @@ Renderer::Renderer(Gpu& gpu, const Assets& assets, const Scene& scene, int width
                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
   create_hair_geometry();
+  create_hairmesh_view();
   // Descriptor set layouts must exist before the pipeline layouts that use them.
   create_descriptors();
   create_pipelines();
@@ -461,7 +493,9 @@ Renderer::~Renderer() {
                     &tex_noise_, &tex_clump_, &lut_nttr_, &lut_ntrt_, &lut_nttr_gi_, &lut_ntrt_gi_, &lut_gi_,
                     &lut_mgi_, &tex_skin_})
     gpu_.destroy_image(*img);
-  for (auto* b : {&hair_vb_, &head_vb_, &head_ib_, &ubo_, &readback_}) gpu_.destroy_buffer(*b);
+  for (auto* b : {&hair_vb_, &head_vb_, &head_ib_, &ubo_, &readback_, &root_buf_, &collider_buf_,
+                  &hair_line_vb_, &hairmesh_curve_vb_, &hairmesh_rect_vb_})
+    gpu_.destroy_buffer(*b);
   if (fence_) gpu_.api.vkDestroyFence(gpu_.device, fence_, nullptr);
   if (layout_scene_) gpu_.api.vkDestroyPipelineLayout(gpu_.device, layout_scene_, nullptr);
   if (layout_full_) gpu_.api.vkDestroyPipelineLayout(gpu_.device, layout_full_, nullptr);
@@ -612,6 +646,94 @@ void Renderer::create_hair_geometry() {
   hair_vb_ = gpu_.create_buffer(verts.size() * sizeof(HairVertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                 verts.data());
+
+  // Line mode ("render mode 0" in the demo): one vertex per curve sample, so a
+  // LINE_STRIP through them draws the strand centre line.
+  std::vector<HairVertex> lines(static_cast<size_t>(hair_segments_));
+  for (uint32_t i = 0; i < hair_segments_; ++i) lines[i] = verts[size_t(i) * 2];
+  hair_line_vert_count_ = hair_segments_;
+  if (hair_line_vb_.buffer) gpu_.destroy_buffer(hair_line_vb_);
+  hair_line_vb_ = gpu_.create_buffer(lines.size() * sizeof(HairVertex), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                     lines.data());
+}
+
+// ------------------------------------------------------- hair-mesh cage view
+
+// "show hair mesh" in the demo draws the control cage: the bundle curves read
+// back out of the hair-mesh 3D texture, plus a rectangle per bundle cell. Both
+// come straight from the exported hairmesh.pos chunk, so no extra data is
+// needed.
+void Renderer::create_hairmesh_view() {
+  const AssetChunk& pos = assets_.get("hairmesh.pos");
+  const uint32_t w = pos.width, h = pos.height, d = pos.depth;
+  const uint32_t levels = assets_.max_hair_levels;  // control points 0..levels
+  const uint32_t samples = levels + 1;
+
+  // Which layout cells actually hold a bundle (the rest are padding in the
+  // 7x6 layout grid).
+  std::vector<uint8_t> occupied(size_t(w) * h, 0);
+  for (uint32_t b = 0; b < bundle_count_; ++b) {
+    const int x = int(bundle_st_[b * 2] - 0.5f);
+    const int y = int(bundle_st_[b * 2 + 1] - 0.5f);
+    if (x >= 0 && y >= 0 && x < int(w) && y < int(h)) occupied[size_t(y) * w + x] = 1;
+  }
+  auto at = [&](uint32_t x, uint32_t y) { return occupied[size_t(y) * w + x] != 0; };
+
+  // Control-point positions of a bundle curve: the z = 3*level slices of the
+  // hair-mesh 3D texture are the level vertices, the slices in between are
+  // the extra cross-section samples used for tangent estimation.
+  auto ctrl = [&](uint32_t x, uint32_t y, uint32_t level, float out[3]) {
+    const size_t idx = ((size_t(std::min(3 * level, d - 1)) * h + y) * w + x) * 3;
+    out[0] = pos.float_at(idx);
+    out[1] = pos.float_at(idx + 1);
+    out[2] = pos.float_at(idx + 2);
+  };
+
+  // Instanced LINE_STRIP cannot offset into a vertex buffer per instance, so
+  // the curves are expanded into an explicit line list instead.
+  std::vector<float> curves;
+  for (uint32_t y = 0; y < h; ++y)
+    for (uint32_t x = 0; x < w; ++x) {
+      if (!at(x, y)) continue;
+      float prev[3], p[3];
+      ctrl(x, y, 0, prev);
+      for (uint32_t l = 1; l < samples; ++l) {
+        ctrl(x, y, l, p);
+        curves.insert(curves.end(), {prev[0], prev[1], prev[2], p[0], p[1], p[2]});
+        prev[0] = p[0]; prev[1] = p[1]; prev[2] = p[2];
+      }
+    }
+  hairmesh_curve_roots_ = 1;
+  hairmesh_curve_verts_ = uint32_t(curves.size() / 3);
+  if (hairmesh_curve_vb_.buffer) gpu_.destroy_buffer(hairmesh_curve_vb_);
+  if (!curves.empty())
+    hairmesh_curve_vb_ = gpu_.create_buffer(curves.size() * 4, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                            curves.data());
+
+  // Rectangle outlines around the fully occupied bundle cells of the layout.
+  std::vector<float> rects;
+  for (uint32_t y = 0; y + 1 < h; ++y)
+    for (uint32_t x = 0; x + 1 < w; ++x) {
+      if (!at(x, y) || !at(x + 1, y) || !at(x + 1, y + 1) || !at(x, y + 1)) continue;
+      float q[4][3];
+      ctrl(x, y, 0, q[0]);
+      ctrl(x + 1, y, 0, q[1]);
+      ctrl(x + 1, y + 1, 0, q[2]);
+      ctrl(x, y + 1, 0, q[3]);
+      for (int i = 0; i < 4; ++i) {
+        const float* a0 = q[i];
+        const float* b0 = q[(i + 1) % 4];
+        rects.insert(rects.end(), {a0[0], a0[1], a0[2], b0[0], b0[1], b0[2]});
+      }
+    }
+  hairmesh_rect_verts_ = uint32_t(rects.size() / 3);
+  if (hairmesh_rect_vb_.buffer) gpu_.destroy_buffer(hairmesh_rect_vb_);
+  if (!rects.empty())
+    hairmesh_rect_vb_ = gpu_.create_buffer(rects.size() * 4, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                           rects.data());
 }
 
 bool Renderer::rebuild_hair(int hair_count, int segments) {
@@ -766,6 +888,43 @@ void Renderer::create_pipelines() {
     p.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
     p_hair_shadow_ = create_pipeline(gpu_, p);
   }
+  // hair, line mode (the demo's default render mode)
+  {
+    PipelineDesc p = d;
+    p.layout = layout_scene_;
+    p.render_pass = scene_pass_;
+    p.sample_count = samples_;
+    p.vert_spv = reinterpret_cast<const char*>(shader("hair.vert")->data);
+    p.vert_size = shader("hair.vert")->size;
+    p.frag_spv = reinterpret_cast<const char*>(shader("hair.frag")->data);
+    p.frag_size = shader("hair.frag")->size;
+    p.vertex_bindings = hair_bindings_;
+    p.vertex_attributes = hair_attrs_;
+    p.cull = VK_CULL_MODE_NONE;
+    p.topology = VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+    p_hair_lines_ = create_pipeline(gpu_, p);
+  }
+  // "show hair mesh": bundle curves and the layout-cell outlines
+  {
+    PipelineDesc p = d;
+    p.layout = layout_full_;  // positions are already in world space
+    p.render_pass = scene_pass_;
+    p.sample_count = samples_;
+    p.vert_spv = reinterpret_cast<const char*>(shader("hairmesh.vert")->data);
+    p.vert_size = shader("hairmesh.vert")->size;
+    p.frag_spv = reinterpret_cast<const char*>(shader("hairmesh.frag")->data);
+    p.frag_size = shader("hairmesh.frag")->size;
+    p.vertex_bindings = {{0, 12, VK_VERTEX_INPUT_RATE_VERTEX}};
+    p.vertex_attributes = {{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0}};
+    p.cull = VK_CULL_MODE_NONE;
+    // The cage hugs the scalp, so a depth test would hide it inside the head;
+    // the demo draws it as a debug overlay on top of everything.
+    p.depth_test = false;
+    p.depth_write = false;
+    p.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    p_hairmesh_curves_ = create_pipeline(gpu_, p);
+    p_hairmesh_rects_ = create_pipeline(gpu_, p);
+  }
   // bloom / post
   {
     PipelineDesc p = d;
@@ -813,16 +972,22 @@ void Renderer::create_descriptors() {
   for (uint32_t i = 0; i < 13; ++i)
     hair_bindings.push_back({i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                              VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT});
+  // 13: explicit root samples (july_rootsamples.js), 14: colliders
+  // (july_colliders.js). Both feed ComputeHairVert() in hair.vert.
+  hair_bindings.push_back({13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT});
+  hair_bindings.push_back({14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT});
   dsl_hair_ = create_descriptor_set_layout(gpu_, hair_bindings);
 
-  VkDescriptorPoolSize sizes[2]{};
+  VkDescriptorPoolSize sizes[3]{};
   sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
   sizes[0].descriptorCount = 4;
   sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
   sizes[1].descriptorCount = 4 * 6 + 1 * 13;
+  sizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  sizes[2].descriptorCount = 2;
   VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
   pci.maxSets = 5;
-  pci.poolSizeCount = 2;
+  pci.poolSizeCount = 3;
   pci.pPoolSizes = sizes;
   check(gpu_.api.vkCreateDescriptorPool(gpu_.device, &pci, nullptr, &desc_pool_), "vkCreateDescriptorPool");
 
@@ -872,6 +1037,10 @@ void Renderer::create_descriptors() {
       {set_hair_, 10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, lut_gi_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
       {set_hair_, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, lut_mgi_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
       {set_hair_, 12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_skin_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+      {set_hair_, 13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_NULL_HANDLE, VK_NULL_HANDLE, root_buf_.buffer, 0,
+       VK_WHOLE_SIZE},
+      {set_hair_, 14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_NULL_HANDLE, VK_NULL_HANDLE, collider_buf_.buffer, 0,
+       VK_WHOLE_SIZE},
   });
 }
 
@@ -940,6 +1109,26 @@ void Renderer::update_frame_ubo(double time, uint32_t frame_index) {
 
 // -------------------------------------------------------------------- passes
 
+// The demo's explicit root table holds ~1000 roots spread unevenly over the
+// bundles; keep that distribution and scale it to the requested strand count.
+uint32_t Renderer::strands_for_bundle(uint32_t bundle) const {
+  if (!scene_.hair.use_root_samples || root_count_.empty() || bundle >= root_count_.size())
+    return bundle_count_ ? (hair_strand_count_ / bundle_count_) : 0;
+  const uint32_t total = std::max(1u, uint32_t(scene_.hair.hair_count));
+  const uint32_t n = root_count_[bundle];
+  return std::max(1u, uint32_t(std::lround(double(n) * double(total) / 1000.0)));
+}
+
+uint32_t Renderer::roots_per_bundle(uint32_t bundle) const {
+  if (root_count_.empty() || bundle >= root_count_.size()) return 1;
+  return std::max(1u, root_count_[bundle]);
+}
+
+uint32_t Renderer::root_base_for_bundle(uint32_t bundle) const {
+  if (!scene_.hair.use_root_samples || root_base_.empty() || bundle >= root_base_.size()) return 0;
+  return root_base_[bundle];
+}
+
 void Renderer::pass_shadows(VkCommandBuffer cmd) {
   VkClearValue clear{};
   clear.depthStencil = {1.0f, 0};
@@ -980,12 +1169,18 @@ void Renderer::pass_shadows(VkCommandBuffer cmd) {
     gpu_.api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_scene_, 0, 2, sets, 0, nullptr);
     VkDeviceSize offset = 0;
     gpu_.api.vkCmdBindVertexBuffers(cmd, 0, 1, &hair_vb_.buffer, &offset);
-    uint32_t per_bundle = hair_strand_count_ / bundle_count_;
     for (uint32_t b = 0; b < bundle_count_; ++b) {
-      float pc[8] = {bundle_st_[b * 2], bundle_st_[b * 2 + 1], 0.0f, 1.0f, 0, 0, 0, 0};
+      float pc[8] = {bundle_st_[b * 2],
+                     bundle_st_[b * 2 + 1],
+                     0.0f,
+                     1.0f,
+                     float(root_base_for_bundle(b)),
+                     scene_.hair.use_root_samples ? 1.0f : 0.0f,
+                     scene_.hair.collide ? 1.0f : 0.0f,
+                     float(roots_per_bundle(b))};
       gpu_.api.vkCmdPushConstants(cmd, layout_scene_,
-                                  VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16, pc);
-      gpu_.api.vkCmdDraw(cmd, hair_vert_count_, per_bundle, 0, 0);
+                                  VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
+      gpu_.api.vkCmdDraw(cmd, hair_vert_count_, strands_for_bundle(b), 0, 0);
     }
   }
   end();
@@ -1060,14 +1255,42 @@ void Renderer::pass_scene(VkCommandBuffer cmd) {
     gpu_.api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p_hair_);
     gpu_.api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_scene_, 0, 2, sets, 0, nullptr);
     VkDeviceSize offset = 0;
-    gpu_.api.vkCmdBindVertexBuffers(cmd, 0, 1, &hair_vb_.buffer, &offset);
+    const bool lines = scene_.hair.render_mode == 0;
+    if (lines) {
+      gpu_.api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p_hair_lines_);
+      gpu_.api.vkCmdBindVertexBuffers(cmd, 0, 1, &hair_line_vb_.buffer, &offset);
+    } else {
+      gpu_.api.vkCmdBindVertexBuffers(cmd, 0, 1, &hair_vb_.buffer, &offset);
+    }
+    const uint32_t verts = lines ? hair_line_vert_count_ : hair_vert_count_;
     float width = scene_.hair.width_px / float(width_);
-    uint32_t per_bundle = hair_strand_count_ / bundle_count_;
     for (uint32_t b = 0; b < bundle_count_; ++b) {
-      float pc[8] = {bundle_st_[b * 2], bundle_st_[b * 2 + 1], width, 0.0f, 0, 0, 0, 0};
+      float pc[8] = {bundle_st_[b * 2],
+                     bundle_st_[b * 2 + 1],
+                     width,
+                     0.0f,
+                     float(root_base_for_bundle(b)),
+                     scene_.hair.use_root_samples ? 1.0f : 0.0f,
+                     scene_.hair.collide ? 1.0f : 0.0f,
+                     float(roots_per_bundle(b))};
       gpu_.api.vkCmdPushConstants(cmd, layout_scene_,
-                                  VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16, pc);
-      gpu_.api.vkCmdDraw(cmd, hair_vert_count_, per_bundle, 0, 0);
+                                  VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
+      gpu_.api.vkCmdDraw(cmd, verts, strands_for_bundle(b), 0, 0);
+    }
+  }
+
+  // hair-mesh cage ("show hair mesh")
+  if (scene_.hair.show_hairmesh && hairmesh_curve_roots_) {
+    gpu_.api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_full_, 0, 1, &set_main_, 0,
+                                     nullptr);
+    VkDeviceSize offset = 0;
+    gpu_.api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p_hairmesh_curves_);
+    gpu_.api.vkCmdBindVertexBuffers(cmd, 0, 1, &hairmesh_curve_vb_.buffer, &offset);
+    gpu_.api.vkCmdDraw(cmd, hairmesh_curve_verts_, hairmesh_curve_roots_, 0, 0);
+    if (hairmesh_rect_verts_) {
+      gpu_.api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p_hairmesh_rects_);
+      gpu_.api.vkCmdBindVertexBuffers(cmd, 0, 1, &hairmesh_rect_vb_.buffer, &offset);
+      gpu_.api.vkCmdDraw(cmd, hairmesh_rect_verts_, 1, 0, 0);
     }
   }
   gpu_.api.vkCmdEndRenderPass(cmd);

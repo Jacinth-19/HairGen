@@ -13,7 +13,20 @@ layout(location = 2) in vec3 inTexW;   // (w for tex_uw, w2, +-ribbon width)
 
 layout(push_constant) uniform HairPC {
   vec4 st;  // st.xy = bundle texel, st.z = ribbon half width, st.w = shadow pass flag
+  // st2.x = first root sample for this bundle,
+  // st2.y = 1 -> use the explicit root table (july_rootsamples.js),
+  // st2.z = 1 -> collide strands against the head colliders (july_colliders.js),
+  // st2.w = number of roots this bundle owns (table wrapping).
+  vec4 st2;
 } pc;
+
+// Explicit root distribution exported from july_rootsamples.js: (s, t) pairs
+// grouped per bundle, indexed by an exclusive prefix table on the CPU.
+layout(std430, set = 1, binding = 13) readonly buffer RootSamples { vec2 roots[]; };
+
+// july_colliders.js: each entry is a pair of spheres (xyz, r) forming a
+// capsule-ish approximation of the head and neck.
+layout(std430, set = 1, binding = 14) readonly buffer Colliders { vec4 collider[]; };
 
 layout(location = 0) out vec4 vViewPos;
 layout(location = 1) out vec3 vTangentView;
@@ -37,10 +50,37 @@ vec3 getPosFromHairMesh(vec2 stp, vec3 pos) {
 
 vec3 noise3(vec3 tc) { return texture(tex_noise, tc).rgb * 2.0 - 1.0; }
 
+// Push a hair vertex out of the head colliders. The demo runs this in its
+// physics solver; a dense strand render can apply it directly in the vertex
+// shader because the geometry is static.
+vec3 collideWithHead(vec3 p) {
+  if (pc.st2.z < 0.5) return p;
+  int n = int(collider.length());
+  for (int i = 0; i + 1 < n; i += 2) {
+    for (int k = 0; k < 2; ++k) {
+      vec4 c = collider[i + k];
+      if (c.w <= 0.0) continue;
+      vec3 d = p - c.xyz;
+      float dist = length(d);
+      if (dist < c.w && dist > 1e-6) p += d * ((c.w - dist) / dist);
+    }
+  }
+  return p;
+}
+
 float evalHairVert(out vec3 p, out vec3 p2, vec4 pos, vec4 pos2, vec2 texW) {
   ivec3 size = textureSize(tex_hairmesh, 0);
   int instance = gl_InstanceIndex;
-  vec2 stp = (pc.st.xy + vec2(Rand(instance, 0), Rand(instance, 1))) / vec2(size.xy);
+  // Root: either the demo's explicit root table or the procedural jitter.
+  // The table holds one root per strip in the demo; for denser renders the
+  // roots are reused cyclically with a small per-strand offset.
+  vec2 jitter = vec2(Rand(instance, 0), Rand(instance, 1));
+  vec2 rootST = jitter;
+  if (pc.st2.y > 0.5) {
+    int n = max(1, int(pc.st2.w));
+    rootST = roots[int(pc.st2.x) + instance % n] + jitter * 0.06;
+  }
+  vec2 stp = (pc.st.xy + rootST) / vec2(size.xy);
 
   float lengthVar = frame.hair0.y;
   float fuzzAmount = frame.hair0.z;
@@ -129,6 +169,9 @@ float evalHairVert(out vec3 p, out vec3 p2, vec4 pos, vec4 pos2, vec2 texW) {
 
   p += style2obj * dStyle;
   p2 += style2obj * dStyle2;
+
+  p = collideWithHead(p);
+  p2 = collideWithHead(p2);
 
   return w;
 }

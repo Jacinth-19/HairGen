@@ -48,10 +48,15 @@ class Renderer {
 
   void create_targets();
   void create_hair_geometry();
+  void create_hairmesh_view();
   void create_pipelines();
   void create_descriptors();
   void update_frame_ubo(double time, uint32_t frame_index);
   void write_png_internal(const std::string& path);
+
+  uint32_t strands_for_bundle(uint32_t bundle) const;
+  uint32_t root_base_for_bundle(uint32_t bundle) const;
+  uint32_t roots_per_bundle(uint32_t bundle) const;
 
   void pass_shadows(VkCommandBuffer cmd);
   void pass_sky_lut(VkCommandBuffer cmd);
@@ -99,12 +104,24 @@ class Renderer {
 
   // pipelines
   VkPipeline p_sky_lut_ = VK_NULL_HANDLE, p_background_ = VK_NULL_HANDLE, p_ground_ = VK_NULL_HANDLE;
-  VkPipeline p_head_ = VK_NULL_HANDLE, p_hair_ = VK_NULL_HANDLE;
+  VkPipeline p_head_ = VK_NULL_HANDLE, p_hair_ = VK_NULL_HANDLE, p_hair_lines_ = VK_NULL_HANDLE;
+  VkPipeline p_hairmesh_curves_ = VK_NULL_HANDLE, p_hairmesh_rects_ = VK_NULL_HANDLE;
   VkPipeline p_obj_shadow_ = VK_NULL_HANDLE, p_hair_shadow_ = VK_NULL_HANDLE;
   VkPipeline p_prefilter_ = VK_NULL_HANDLE, p_blur_ = VK_NULL_HANDLE, p_post_ = VK_NULL_HANDLE;
 
   // geometry
   Buffer ubo_, hair_vb_, head_vb_, head_ib_, readback_;
+  Buffer hair_line_vb_;        // one vertex per segment: strand centre lines
+  Buffer root_buf_;            // explicit root samples (s,t) per bundle
+  Buffer collider_buf_;        // july_colliders.js spheres, 2 per entry
+  Buffer hairmesh_curve_vb_;   // hair-mesh cage curves (world space positions)
+  Buffer hairmesh_rect_vb_;    // bundle quads on the cage, as line pairs
+  uint32_t hair_line_vert_count_ = 0;
+  uint32_t collider_count_ = 0;
+  std::vector<uint32_t> root_base_, root_count_;  // per bundle root ranges
+  uint32_t hairmesh_curve_roots_ = 0;   // number of cage curves
+  uint32_t hairmesh_curve_verts_ = 0;   // samples per curve
+  uint32_t hairmesh_rect_verts_ = 0;
   std::vector<VkVertexInputBindingDescription> hair_bindings_;
   std::vector<VkVertexInputAttributeDescription> hair_attrs_;
   uint32_t head_index_count_ = 0;

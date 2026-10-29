@@ -32,7 +32,8 @@ int main(int argc, char** argv) {
   // Every chunk the renderer asks for must be present.
   for (const char* name : {"head.pos", "head.nrm", "head.uv", "head.idx", "hairmesh.pos",
                            "hairmesh.uv", "hairmesh.uw", "hairmesh.v", "hair.clump",
-                           "hair.bundles", "noise3d", "N_TT_R", "N_TRT", "N_TT_R_GI",
+                           "hair.bundles", "roots.st", "roots.base", "roots.count", "colliders",
+                           "noise3d", "N_TT_R", "N_TRT", "N_TT_R_GI",
                            "N_TRT_GI", "GI", "M_GI", "skin.albedo"}) {
     if (!assets.has(name)) std::fprintf(stderr, "  missing chunk %s\n", name);
     CHECK(assets.has(name));
@@ -64,6 +65,38 @@ int main(int argc, char** argv) {
   }
   // The clump map must cover a meaningful part of the hair-mesh UV layout.
   CHECK(resolved > clump.texel_count() / 4);
+
+  // Explicit root samples (july_rootsamples.js): the per-bundle prefix table
+  // must tile the (s,t) array exactly, and stay inside the texture.
+  const AssetChunk& roots = assets.get("roots.st");
+  const AssetChunk& root_base = assets.get("roots.base");
+  const AssetChunk& root_count = assets.get("roots.count");
+  CHECK(roots.channels == 2);
+  CHECK(root_base.texel_count() == bundles.texel_count());
+  CHECK(root_count.texel_count() == bundles.texel_count());
+  size_t expected_base = 0;
+  for (size_t b = 0; b < root_count.texel_count(); ++b) {
+    CHECK(size_t(root_base.float_at(b)) == expected_base);
+    CHECK(root_count.float_at(b) > 0.0f);
+    expected_base += size_t(root_count.float_at(b));
+  }
+  CHECK(expected_base == roots.texel_count());
+  CHECK(roots.texel_count() == 1000);  // july_rootsamples.js ships 1000 strips
+  for (size_t i = 0; i < roots.texel_count() * 2; ++i) {
+    float v = roots.float_at(i);
+    CHECK(v >= 0.0f && v <= 1.0f);
+  }
+
+  // Colliders (july_colliders.js): 9 entries of two spheres, all near the head.
+  const AssetChunk& colliders = assets.get("colliders");
+  CHECK(colliders.channels == 8);
+  CHECK(colliders.texel_count() >= 8);
+  for (size_t i = 0; i < colliders.texel_count(); ++i)
+    for (int c = 0; c < 8; ++c) {
+      float v = colliders.float_at(i * 8 + c);
+      if (c % 4 == 3) CHECK(v >= 0.0f && v < 1.0f);  // radii are in world units
+      else CHECK(v > -2.0f && v < 2.0f);
+    }
 
   const AssetChunk& idx = assets.get("head.idx");
   CHECK(idx.texel_count() > 0 && idx.texel_count() % 3 == 0);

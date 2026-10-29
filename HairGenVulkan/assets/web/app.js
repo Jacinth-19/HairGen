@@ -191,7 +191,7 @@ function wireSimpleInputs() {
     sync();
   }
 
-  for (const id of ['showHead', 'showHair', 'showGround']) {
+  for (const id of ['showHead', 'showHair', 'showGround', 'rootSamples', 'collide', 'showHairMesh']) {
     const box = document.getElementById(id);
     if (!box) continue;
     const sync = () => {
@@ -199,6 +199,15 @@ function wireSimpleInputs() {
       queueUpdate();
     };
     box.addEventListener('change', sync);
+  }
+
+  const mode = document.getElementById('renderMode');
+  if (mode) {
+    mode.addEventListener('change', () => {
+      state.renderMode = parseInt(mode.value, 10);
+      queueUpdate();
+    });
+    state.renderMode = parseInt(mode.value, 10);
   }
 
   const style = document.getElementById('hairColor');
