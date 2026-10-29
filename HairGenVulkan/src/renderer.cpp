@@ -37,8 +37,10 @@ struct FrameUbo {
   float fiber2[4];
   float skyRef[4];
   float misc[4];
+  float dye[4];
+  float dye2[4];
 };
-static_assert(sizeof(FrameUbo) == (16 * 5 + 4 * 14) * 4, "unexpected UBO packing");
+static_assert(sizeof(FrameUbo) == (16 * 5 + 4 * 16) * 4, "unexpected UBO packing");
 
 void copy_mat(float* dst, const mat4& m) { std::memcpy(dst, m.m, sizeof(float) * 16); }
 
@@ -301,14 +303,15 @@ Renderer::Renderer(Gpu& gpu, const Assets& assets, const Scene& scene, int width
   // ---- samplers
   samp_shadow_ = gpu_.create_sampler(VK_FILTER_LINEAR, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, true);
   samp_hairdepth_ = gpu_.create_sampler(VK_FILTER_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, false);
-  samp_linear_ = gpu_.create_sampler(VK_FILTER_LINEAR, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, false);
+  if (const char* d = std::getenv("HGEN_DBG")) dbg_id_ = std::atoi(d);
+  samp_linear_ = gpu_.create_sampler(VK_FILTER_LINEAR, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, false, true);
   samp_repeat_ = gpu_.create_sampler(VK_FILTER_LINEAR, VK_SAMPLER_ADDRESS_MODE_REPEAT, false);
   samp_nearest_ = gpu_.create_sampler(VK_FILTER_NEAREST, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, false);
 
   create_targets();
 
   // ---- textures from the asset bundle
-  auto upload_float = [&](const char* name, bool is_3d, Image& out) {
+  auto upload_float = [&](const char* name, bool is_3d, Image& out, bool mipmap = false) {
     const AssetChunk& c = assets_.get(name);
     size_t texels = c.texel_count();
     uint32_t comps = c.channels;
@@ -337,14 +340,20 @@ Renderer::Renderer(Gpu& gpu, const Assets& assets, const Scene& scene, int width
         for (uint32_t k = 0; k < out_comps; ++k)
           dst[t * out_comps + k] = float_to_half(k < comps ? src[t * comps + k] : 0.0f);
     }
-    out = is_3d ? gpu_.create_image_3d(c.width, c.height, c.depth, format,
-                                       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)
-                : gpu_.create_image_2d(c.width, c.height, format,
-                                       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    uint32_t mips = 1;
+    if (mipmap && !is_3d) {
+      for (uint32_t d = std::max(c.width, c.height); d > 1; d >>= 1) ++mips;
+    }
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                              (mips > 1 ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0);
+    out = is_3d ? gpu_.create_image_3d(c.width, c.height, c.depth, format, usage)
+                : gpu_.create_image_2d(c.width, c.height, format, usage,
+                                       VK_SAMPLE_COUNT_1_BIT, mips);
     gpu_.upload_image(out, bytes.data(), bytes.size());
   };
 
-  auto upload_u8 = [&](const char* name, bool is_3d, VkFormat format, uint32_t out_comps, Image& out) {
+  auto upload_u8 = [&](const char* name, bool is_3d, VkFormat format, uint32_t out_comps, Image& out,
+                       bool mipmap = false) {
     const AssetChunk& c = assets_.get(name);
     size_t texels = c.texel_count();
     std::vector<uint8_t> bytes(texels * out_comps);
@@ -352,10 +361,15 @@ Renderer::Renderer(Gpu& gpu, const Assets& assets, const Scene& scene, int width
       for (uint32_t k = 0; k < out_comps; ++k)
         bytes[t * out_comps + k] = k < c.channels ? c.data[t * c.channels + k]
                                                   : (out_comps == 4 ? 255 : 0);
-    out = is_3d ? gpu_.create_image_3d(c.width, c.height, c.depth, format,
-                                       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)
-                : gpu_.create_image_2d(c.width, c.height, format,
-                                       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    uint32_t mips = 1;
+    if (mipmap && !is_3d) {
+      for (uint32_t d = std::max(c.width, c.height); d > 1; d >>= 1) ++mips;
+    }
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                              (mips > 1 ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0);
+    out = is_3d ? gpu_.create_image_3d(c.width, c.height, c.depth, format, usage)
+                : gpu_.create_image_2d(c.width, c.height, format, usage,
+                                       VK_SAMPLE_COUNT_1_BIT, mips);
     gpu_.upload_image(out, bytes.data(), bytes.size());
   };
 
@@ -365,13 +379,38 @@ Renderer::Renderer(Gpu& gpu, const Assets& assets, const Scene& scene, int width
   upload_float("hairmesh.v", true, tex_v_);
   upload_u8("noise3d", true, VK_FORMAT_R8G8B8A8_UNORM, 4, tex_noise_);
   upload_u8("hair.clump", false, VK_FORMAT_R8G8B8A8_UNORM, 4, tex_clump_);
-  upload_u8("N_TT_R", false, VK_FORMAT_R8G8B8A8_UNORM, 4, lut_nttr_);
-  upload_u8("N_TRT", false, VK_FORMAT_R8G8B8A8_UNORM, 4, lut_ntrt_);
-  upload_u8("N_TT_R_GI", false, VK_FORMAT_R8G8B8A8_UNORM, 4, lut_nttr_gi_);
-  upload_u8("N_TRT_GI", false, VK_FORMAT_R8G8B8A8_UNORM, 4, lut_ntrt_gi_);
-  upload_u8("GI", true, VK_FORMAT_R8G8B8A8_UNORM, 4, lut_gi_);
-  upload_u8("M_GI", false, VK_FORMAT_R8G8B8A8_UNORM, 4, lut_mgi_);
-  upload_u8("skin.albedo", false, VK_FORMAT_R8G8B8A8_UNORM, 4, tex_skin_);
+  // The skin maps are minified hard at these camera distances, so they all get
+  // mip chains (a 1024^2 pore-level normal map aliases into gravel otherwise).
+  upload_u8("skin.albedo", false, VK_FORMAT_R8G8B8A8_UNORM, 4, tex_skin_, true);
+  upload_u8("skin.flat", false, VK_FORMAT_R8G8B8A8_UNORM, 4, tex_skin_flat_, true);
+  // Detail maps (optional in the bundle).
+  if (assets_.has("skin.normal")) upload_u8("skin.normal", false, VK_FORMAT_R8G8B8A8_UNORM, 4, tex_skin_nrm_, true);
+  if (assets_.has("skin.ao")) upload_u8("skin.ao", false, VK_FORMAT_R8_UNORM, 1, tex_skin_ao_, true);
+  if (assets_.has("skin.spec")) upload_u8("skin.spec", false, VK_FORMAT_R8_UNORM, 1, tex_skin_spec_, true);
+  upload_u8("hair.clump", false, VK_FORMAT_R8G8B8A8_UNORM, 4, tex_clump_, true);
+
+  // ---- hair materials: one LUT set each
+  {
+    const AssetChunk& names = assets_.get("mtl.names");
+    std::string list(reinterpret_cast<const char*>(names.data.data()), names.data.size());
+    size_t pos = 0;
+    while (pos < list.size()) {
+      const size_t end = list.find('\0', pos);
+      if (end == std::string::npos || end == pos) break;
+      MaterialSet m;
+      m.name = list.substr(pos, end - pos);
+      const std::string tag = "mtl." + m.name + ".";
+      upload_u8((tag + "N_TT_R").c_str(), false, VK_FORMAT_R8G8B8A8_UNORM, 4, m.nttr);
+      upload_u8((tag + "N_TRT").c_str(), false, VK_FORMAT_R8G8B8A8_UNORM, 4, m.ntrt);
+      upload_u8((tag + "N_TT_R_GI").c_str(), false, VK_FORMAT_R8G8B8A8_UNORM, 4, m.nttr_gi);
+      upload_u8((tag + "N_TRT_GI").c_str(), false, VK_FORMAT_R8G8B8A8_UNORM, 4, m.ntrt_gi);
+      upload_u8((tag + "GI").c_str(), true, VK_FORMAT_R8G8B8A8_UNORM, 4, m.gi);
+      upload_u8((tag + "M_GI").c_str(), false, VK_FORMAT_R8G8B8A8_UNORM, 4, m.mgi);
+      materials_.push_back(std::move(m));
+      pos = end + 1;
+    }
+    if (materials_.empty()) throw std::runtime_error("asset bundle has no materials");
+  }
 
   // ---- head geometry
   {
@@ -396,6 +435,32 @@ Renderer::Renderer(Gpu& gpu, const Assets& assets, const Scene& scene, int width
     for (size_t i = 0; i < indices.size(); ++i) indices[i] = uint32_t(idx.float_at(i));
     head_index_count_ = uint32_t(indices.size());
     head_ib_ = gpu_.create_buffer(indices.size() * 4, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                  indices.data());
+  }
+
+  // ---- pedestal under the neck (generated by the exporter)
+  if (assets_.has("bust.pos")) {
+    const AssetChunk& p = assets_.get("bust.pos");
+    const AssetChunk& n = assets_.get("bust.nrm");
+    const AssetChunk& idx = assets_.get("bust.idx");
+    const size_t verts = p.texel_count();
+    std::vector<float> interleaved(verts * 8);
+    for (size_t i = 0; i < verts; ++i) {
+      for (int k = 0; k < 3; ++k) {
+        interleaved[i * 8 + k] = p.float_at(i * 3 + k);
+        interleaved[i * 8 + 3 + k] = n.float_at(i * 3 + k);
+      }
+      interleaved[i * 8 + 6] = 0.5f;  // no texture on the pedestal
+      interleaved[i * 8 + 7] = 0.5f;
+    }
+    bust_vb_ = gpu_.create_buffer(interleaved.size() * 4, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                                  interleaved.data());
+    std::vector<uint32_t> indices(idx.texel_count());
+    for (size_t i = 0; i < indices.size(); ++i) indices[i] = uint32_t(idx.float_at(i));
+    bust_index_count_ = uint32_t(indices.size());
+    bust_ib_ = gpu_.create_buffer(indices.size() * 4, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                   indices.data());
   }
@@ -471,6 +536,7 @@ Renderer::~Renderer() {
   destroy_pipeline(p_background_);
   destroy_pipeline(p_ground_);
   destroy_pipeline(p_head_);
+  destroy_pipeline(p_bust_);
   destroy_pipeline(p_hair_);
   destroy_pipeline(p_obj_shadow_);
   destroy_pipeline(p_hair_shadow_);
@@ -490,10 +556,12 @@ Renderer::~Renderer() {
   if (pass_depth_) gpu_.api.vkDestroyRenderPass(gpu_.device, pass_depth_, nullptr);
   for (auto* img : {&sky_lut_, &bloom1_, &bloom2_, &hdr_msaa_, &hdr_resolve_, &depth_msaa_, &final_color_,
                     &obj_shadow_, &hair_shadow_, &dummy_tex_, &dummy_depth_, &tex_hairmesh_, &tex_uv_, &tex_uw_, &tex_v_,
-                    &tex_noise_, &tex_clump_, &lut_nttr_, &lut_ntrt_, &lut_nttr_gi_, &lut_ntrt_gi_, &lut_gi_,
-                    &lut_mgi_, &tex_skin_})
+                    &tex_noise_, &tex_clump_, &tex_skin_, &tex_skin_flat_, &tex_skin_nrm_, &tex_skin_ao_,
+                    &tex_skin_spec_})
     gpu_.destroy_image(*img);
-  for (auto* b : {&hair_vb_, &head_vb_, &head_ib_, &ubo_, &readback_, &root_buf_, &collider_buf_,
+  for (MaterialSet& m : materials_)
+    for (auto* img : {&m.nttr, &m.ntrt, &m.nttr_gi, &m.ntrt_gi, &m.gi, &m.mgi}) gpu_.destroy_image(*img);
+  for (auto* b : {&hair_vb_, &head_vb_, &head_ib_, &bust_vb_, &bust_ib_, &ubo_, &readback_, &root_buf_, &collider_buf_,
                   &hair_line_vb_, &hairmesh_curve_vb_, &hairmesh_rect_vb_})
     gpu_.destroy_buffer(*b);
   if (fence_) gpu_.api.vkDestroyFence(gpu_.device, fence_, nullptr);
@@ -833,8 +901,31 @@ void Renderer::create_pipelines() {
         {1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12},
         {2, 0, VK_FORMAT_R32G32_SFLOAT, 24},
     };
+    // The bust is a torn triangle strip: parts of it face away from any given
+    // viewpoint, so both sides must be shaded (the shader flips the normal on
+    // back faces, as the web demo's fs_obj does).
     p.cull = VK_CULL_MODE_NONE;
+    if (std::getenv("HGEN_NODEPTH")) { p.depth_test = false; p.depth_write = false; }
     p_head_ = create_pipeline(gpu_, p);
+  }
+  // pedestal (same vertex layout as the head, different material)
+  if (bust_index_count_) {
+    PipelineDesc p = d;
+    p.layout = layout_scene_;
+    p.render_pass = scene_pass_;
+    p.sample_count = samples_;
+    p.vert_spv = reinterpret_cast<const char*>(shader("head.vert")->data);
+    p.vert_size = shader("head.vert")->size;
+    p.frag_spv = reinterpret_cast<const char*>(shader("bust.frag")->data);
+    p.frag_size = shader("bust.frag")->size;
+    p.vertex_bindings = {{0, 32, VK_VERTEX_INPUT_RATE_VERTEX}};
+    p.vertex_attributes = {
+        {0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0},
+        {1, 0, VK_FORMAT_R32G32B32_SFLOAT, 12},
+        {2, 0, VK_FORMAT_R32G32_SFLOAT, 24},
+    };
+    p.cull = VK_CULL_MODE_NONE;
+    p_bust_ = create_pipeline(gpu_, p);
   }
   // hair
   hair_bindings_ = {{0, sizeof(HairVertex), VK_VERTEX_INPUT_RATE_VERTEX}};
@@ -965,6 +1056,10 @@ void Renderer::create_descriptors() {
       {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
       {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
       {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
+      {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
+      {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
+      {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
+      {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
   };
   dsl_frame_ = create_descriptor_set_layout(gpu_, frame_bindings);
 
@@ -982,11 +1077,11 @@ void Renderer::create_descriptors() {
   sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
   sizes[0].descriptorCount = 4;
   sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  sizes[1].descriptorCount = 4 * 6 + 1 * 13;
+  sizes[1].descriptorCount = uint32_t(4 * 10 + materials_.size() * 13);
   sizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  sizes[2].descriptorCount = 2;
+  sizes[2].descriptorCount = uint32_t(materials_.size() * 2);
   VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pci.maxSets = 5;
+  pci.maxSets = uint32_t(5 + materials_.size());
   pci.poolSizeCount = 3;
   pci.pPoolSizes = sizes;
   check(gpu_.api.vkCreateDescriptorPool(gpu_.device, &pci, nullptr, &desc_pool_), "vkCreateDescriptorPool");
@@ -1005,7 +1100,8 @@ void Renderer::create_descriptors() {
 
   ai.descriptorSetCount = 1;
   ai.pSetLayouts = &dsl_hair_;
-  check(gpu_.api.vkAllocateDescriptorSets(gpu_.device, &ai, &set_hair_), "vkAllocateDescriptorSets");
+  for (MaterialSet& m : materials_)
+    check(gpu_.api.vkAllocateDescriptorSets(gpu_.device, &ai, &m.set), "vkAllocateDescriptorSets");
 
   auto frame_set = [&](VkDescriptorSet set, const Image& obj_shad, const Image& hair_shad,
                        const Image& sky, const Image& bloom) {
@@ -1016,6 +1112,10 @@ void Renderer::create_descriptors() {
         {set, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sky.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
         {set, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, bloom.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
         {set, 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, hdr_resolve_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+        {set, 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_skin_flat_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+        {set, 7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_skin_nrm_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+        {set, 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_skin_ao_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+        {set, 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_skin_spec_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
     });
   };
   frame_set(set_main_, obj_shadow_, hair_shadow_, sky_lut_, bloom1_);
@@ -1023,25 +1123,28 @@ void Renderer::create_descriptors() {
   frame_set(set_blur_, obj_shadow_, hair_shadow_, sky_lut_, bloom2_);
   frame_set(set_shadow_, dummy_depth_, dummy_depth_, sky_lut_, bloom1_);
 
-  write_descriptors(gpu_, {
-      {set_hair_, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_hairmesh_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
-      {set_hair_, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_uv_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
-      {set_hair_, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_uw_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
-      {set_hair_, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_v_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
-      {set_hair_, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_noise_.view, samp_repeat_, VK_NULL_HANDLE, 0, 0},
-      {set_hair_, 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_clump_.view, samp_nearest_, VK_NULL_HANDLE, 0, 0},
-      {set_hair_, 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, lut_nttr_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
-      {set_hair_, 7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, lut_ntrt_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
-      {set_hair_, 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, lut_nttr_gi_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
-      {set_hair_, 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, lut_ntrt_gi_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
-      {set_hair_, 10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, lut_gi_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
-      {set_hair_, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, lut_mgi_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
-      {set_hair_, 12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_skin_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
-      {set_hair_, 13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_NULL_HANDLE, VK_NULL_HANDLE, root_buf_.buffer, 0,
-       VK_WHOLE_SIZE},
-      {set_hair_, 14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_NULL_HANDLE, VK_NULL_HANDLE, collider_buf_.buffer, 0,
-       VK_WHOLE_SIZE},
-  });
+  // Each material set is identical except for the six Marschner tables.
+  for (MaterialSet& m : materials_) {
+    write_descriptors(gpu_, {
+        {m.set, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_hairmesh_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+        {m.set, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_uv_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+        {m.set, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_uw_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+        {m.set, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_v_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+        {m.set, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_noise_.view, samp_repeat_, VK_NULL_HANDLE, 0, 0},
+        {m.set, 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_clump_.view, samp_nearest_, VK_NULL_HANDLE, 0, 0},
+        {m.set, 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m.nttr.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+        {m.set, 7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m.ntrt.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+        {m.set, 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m.nttr_gi.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+        {m.set, 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m.ntrt_gi.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+        {m.set, 10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m.gi.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+        {m.set, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, m.mgi.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+        {m.set, 12, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_skin_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+        {m.set, 13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_NULL_HANDLE, VK_NULL_HANDLE, root_buf_.buffer, 0,
+         VK_WHOLE_SIZE},
+        {m.set, 14, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_NULL_HANDLE, VK_NULL_HANDLE, collider_buf_.buffer, 0,
+         VK_WHOLE_SIZE},
+    });
+  }
 }
 
 // --------------------------------------------------------------------- frame
@@ -1101,7 +1204,11 @@ void Renderer::update_frame_ubo(double time, uint32_t frame_index) {
 
   u.misc[0] = scene_.sky.ground_y;
   u.misc[1] = scene_.sky.show_ground ? 1.0f : 0.0f;
-  u.misc[2] = 0.0f;
+  u.misc[2] = float(dbg_id_);
+  u.dye[0] = scene_.hair.dye[0]; u.dye[1] = scene_.hair.dye[1];
+  u.dye[2] = scene_.hair.dye[2]; u.dye[3] = scene_.hair.dye_strength;
+  u.dye2[0] = scene_.hair.root_darken; u.dye2[1] = scene_.hair.color_variation;
+  u.dye2[2] = scene_.hair.sheen; u.dye2[3] = 0.0f;
   u.misc[3] = float(frame_index);
 
   std::memcpy(ubo_.mapped, &u, sizeof(u));
@@ -1111,6 +1218,13 @@ void Renderer::update_frame_ubo(double time, uint32_t frame_index) {
 
 // The demo's explicit root table holds ~1000 roots spread unevenly over the
 // bundles; keep that distribution and scale it to the requested strand count.
+// The descriptor set of the active hair material.
+VkDescriptorSet Renderer::hair_set() const {
+  if (materials_.empty()) return VK_NULL_HANDLE;
+  const size_t i = std::min(materials_.size() - 1, size_t(std::max(0, scene_.hair.material)));
+  return materials_[i].set;
+}
+
 uint32_t Renderer::strands_for_bundle(uint32_t bundle) const {
   if (!scene_.hair.use_root_samples || root_count_.empty() || bundle >= root_count_.size())
     return bundle_count_ ? (hair_strand_count_ / bundle_count_) : 0;
@@ -1150,7 +1264,7 @@ void Renderer::pass_shadows(VkCommandBuffer cmd) {
 
   // Object shadow map
   begin(fb_obj_shadow_, uint32_t(shadow_res_));
-  if (scene_.hair.show_head && head_index_count_) {
+  if (scene_.hair.show_head && head_index_count_ && scene_.hair.head_casts_shadow) {
     gpu_.api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p_obj_shadow_);
     gpu_.api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_full_, 0, 1, &set_shadow_, 0,
                                      nullptr);
@@ -1159,13 +1273,22 @@ void Renderer::pass_shadows(VkCommandBuffer cmd) {
     gpu_.api.vkCmdBindIndexBuffer(cmd, head_ib_.buffer, 0, VK_INDEX_TYPE_UINT32);
     gpu_.api.vkCmdDrawIndexed(cmd, head_index_count_, 1, 0, 0, 0);
   }
+  if (bust_index_count_) {
+    gpu_.api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p_obj_shadow_);
+    gpu_.api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_full_, 0, 1, &set_shadow_, 0,
+                                     nullptr);
+    VkDeviceSize offset = 0;
+    gpu_.api.vkCmdBindVertexBuffers(cmd, 0, 1, &bust_vb_.buffer, &offset);
+    gpu_.api.vkCmdBindIndexBuffer(cmd, bust_ib_.buffer, 0, VK_INDEX_TYPE_UINT32);
+    gpu_.api.vkCmdDrawIndexed(cmd, bust_index_count_, 1, 0, 0, 0);
+  }
   end();
 
   // Hair shadow map
   begin(fb_hair_shadow_, uint32_t(shadow_res_));
   if (scene_.hair.show_hair && hair_vert_count_) {
     gpu_.api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p_hair_shadow_);
-    VkDescriptorSet sets[2] = {set_shadow_, set_hair_};
+    VkDescriptorSet sets[2] = {set_shadow_, hair_set()};
     gpu_.api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_scene_, 0, 2, sets, 0, nullptr);
     VkDeviceSize offset = 0;
     gpu_.api.vkCmdBindVertexBuffers(cmd, 0, 1, &hair_vb_.buffer, &offset);
@@ -1201,7 +1324,7 @@ void Renderer::pass_sky_lut(VkCommandBuffer cmd) {
   gpu_.api.vkCmdSetViewport(cmd, 0, 1, &vp);
   gpu_.api.vkCmdSetScissor(cmd, 0, 1, &sc);
   gpu_.api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p_sky_lut_);
-  VkDescriptorSet sky_sets[2] = {set_sky_, set_hair_};
+  VkDescriptorSet sky_sets[2] = {set_sky_, hair_set()};
   gpu_.api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_scene_, 0, 2, sky_sets, 0,
                                     nullptr);
   gpu_.api.vkCmdDraw(cmd, 3, 1, 0, 0);
@@ -1231,13 +1354,23 @@ void Renderer::pass_scene(VkCommandBuffer cmd) {
   gpu_.api.vkCmdDraw(cmd, 3, 1, 0, 0);
   }
 
-  VkDescriptorSet sets[2] = {set_main_, set_hair_};
+  VkDescriptorSet sets[2] = {set_main_, hair_set()};
 
   // ground
   if (scene_.sky.show_ground && !skip_pass("grounddraw")) {
     gpu_.api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p_ground_);
     gpu_.api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_scene_, 0, 2, sets, 0, nullptr);
     gpu_.api.vkCmdDraw(cmd, 3, 1, 0, 0);
+  }
+
+  // pedestal
+  if (bust_index_count_ && !skip_pass("bustdraw")) {
+    gpu_.api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p_bust_);
+    gpu_.api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_scene_, 0, 2, sets, 0, nullptr);
+    VkDeviceSize offset = 0;
+    gpu_.api.vkCmdBindVertexBuffers(cmd, 0, 1, &bust_vb_.buffer, &offset);
+    gpu_.api.vkCmdBindIndexBuffer(cmd, bust_ib_.buffer, 0, VK_INDEX_TYPE_UINT32);
+    gpu_.api.vkCmdDrawIndexed(cmd, bust_index_count_, 1, 0, 0, 0);
   }
 
   // head

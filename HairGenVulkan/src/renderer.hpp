@@ -75,7 +75,16 @@ class Renderer {
   Image sky_lut_, bloom1_, bloom2_, hdr_msaa_, hdr_resolve_, depth_msaa_, final_color_;
   Image obj_shadow_, hair_shadow_, dummy_tex_, dummy_depth_;
   Image tex_hairmesh_, tex_uv_, tex_uw_, tex_v_, tex_noise_, tex_clump_;
-  Image lut_nttr_, lut_ntrt_, lut_nttr_gi_, lut_ntrt_gi_, lut_gi_, lut_mgi_, tex_skin_;
+  int dbg_id_ = 0;
+  Image tex_skin_, tex_skin_flat_, tex_skin_nrm_, tex_skin_ao_, tex_skin_spec_;
+
+  // One set of Marschner lookup tables per hair material (std_blond, rosa, ...).
+  struct MaterialSet {
+    std::string name;
+    Image nttr, ntrt, nttr_gi, ntrt_gi, gi, mgi;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+  };
+  std::vector<MaterialSet> materials_;
   VkSampler samp_shadow_ = VK_NULL_HANDLE;   // depth compare (object)
   VkSampler samp_hairdepth_ = VK_NULL_HANDLE;  // raw nearest depth (hair)
   VkSampler samp_linear_ = VK_NULL_HANDLE;
@@ -96,7 +105,7 @@ class Renderer {
   VkDescriptorPool desc_pool_ = VK_NULL_HANDLE;
   VkDescriptorSet set_main_ = VK_NULL_HANDLE, set_sky_ = VK_NULL_HANDLE, set_blur_ = VK_NULL_HANDLE,
                   set_shadow_ = VK_NULL_HANDLE;
-  VkDescriptorSet set_hair_ = VK_NULL_HANDLE;
+  VkDescriptorSet hair_set() const;
   VkPipelineLayout layout_scene_ = VK_NULL_HANDLE;
   VkPipelineLayout layout_full_ = VK_NULL_HANDLE;
   VkPipelineLayout layout_post_ = VK_NULL_HANDLE;
@@ -104,13 +113,14 @@ class Renderer {
 
   // pipelines
   VkPipeline p_sky_lut_ = VK_NULL_HANDLE, p_background_ = VK_NULL_HANDLE, p_ground_ = VK_NULL_HANDLE;
-  VkPipeline p_head_ = VK_NULL_HANDLE, p_hair_ = VK_NULL_HANDLE, p_hair_lines_ = VK_NULL_HANDLE;
+  VkPipeline p_head_ = VK_NULL_HANDLE, p_bust_ = VK_NULL_HANDLE, p_hair_ = VK_NULL_HANDLE,
+             p_hair_lines_ = VK_NULL_HANDLE;
   VkPipeline p_hairmesh_curves_ = VK_NULL_HANDLE, p_hairmesh_rects_ = VK_NULL_HANDLE;
   VkPipeline p_obj_shadow_ = VK_NULL_HANDLE, p_hair_shadow_ = VK_NULL_HANDLE;
   VkPipeline p_prefilter_ = VK_NULL_HANDLE, p_blur_ = VK_NULL_HANDLE, p_post_ = VK_NULL_HANDLE;
 
   // geometry
-  Buffer ubo_, hair_vb_, head_vb_, head_ib_, readback_;
+  Buffer ubo_, hair_vb_, head_vb_, head_ib_, bust_vb_, bust_ib_, readback_;
   Buffer hair_line_vb_;        // one vertex per segment: strand centre lines
   Buffer root_buf_;            // explicit root samples (s,t) per bundle
   Buffer collider_buf_;        // july_colliders.js spheres, 2 per entry
@@ -125,6 +135,7 @@ class Renderer {
   std::vector<VkVertexInputBindingDescription> hair_bindings_;
   std::vector<VkVertexInputAttributeDescription> hair_attrs_;
   uint32_t head_index_count_ = 0;
+  uint32_t bust_index_count_ = 0;
   uint32_t hair_strand_count_ = 0;
   uint32_t hair_segments_ = 0;
   uint32_t hair_vert_count_ = 0;

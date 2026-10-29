@@ -33,10 +33,52 @@ int main(int argc, char** argv) {
   for (const char* name : {"head.pos", "head.nrm", "head.uv", "head.idx", "hairmesh.pos",
                            "hairmesh.uv", "hairmesh.uw", "hairmesh.v", "hair.clump",
                            "hair.bundles", "roots.st", "roots.base", "roots.count", "colliders",
-                           "noise3d", "N_TT_R", "N_TRT", "N_TT_R_GI",
-                           "N_TRT_GI", "GI", "M_GI", "skin.albedo"}) {
+                           "noise3d", "skin.albedo", "skin.normal", "skin.ao", "skin.spec", "mtl.names",
+                           "bust.pos", "bust.nrm", "bust.idx"}) {
     if (!assets.has(name)) std::fprintf(stderr, "  missing chunk %s\n", name);
     CHECK(assets.has(name));
+  }
+
+  // Skin detail maps: a tangent-space normal (built from the supplied height
+  // field), an ambient-occlusion mask and a specular mask. The raw uploaded
+  // normal map is not shipped -- it is pore noise, and the exporter folds a
+  // prefiltered quarter of it into the height-derived normal instead.
+  {
+    const AssetChunk& n = assets.get("skin.normal");
+    CHECK(n.width == 512 && n.height == 512);
+    CHECK(n.channels == 4);
+    const AssetChunk& ao = assets.get("skin.ao");
+    CHECK(ao.width == 1024 && ao.channels == 1);
+    const AssetChunk& spec = assets.get("skin.spec");
+    CHECK(spec.width == 1024 && spec.channels == 1);
+    CHECK(!assets.has("skin.height"));  // consumed at export time, not at runtime
+  }
+
+  // Materials: the bundle ships a full Marschner LUT set per hair material.
+  {
+    const AssetChunk& names = assets.get("mtl.names");
+    std::string list(reinterpret_cast<const char*>(names.data.data()), names.data.size());
+    CHECK(list.find("std_blond") != std::string::npos);
+    CHECK(list.find("rosa") != std::string::npos);
+    for (const char* mat : {"std_blond", "rosa"}) {
+      for (const char* lut : {"N_TT_R", "N_TRT", "N_TT_R_GI", "N_TRT_GI", "GI", "M_GI"}) {
+        const std::string chunk = std::string("mtl.") + mat + "." + lut;
+        if (!assets.has(chunk.c_str())) std::fprintf(stderr, "  missing chunk %s\n", chunk.c_str());
+        CHECK(assets.has(chunk.c_str()));
+      }
+    }
+    const AssetChunk& nttr = assets.get("mtl.std_blond.N_TT_R");
+    CHECK(nttr.channels == 4 && nttr.width == nttr.height);
+    const AssetChunk& rosa = assets.get("mtl.rosa.N_TT_R");
+    CHECK(rosa.channels == 4 && rosa.width == rosa.height);
+  }
+
+  // The pedestal that replaces the torn shoulders.
+  {
+    const AssetChunk& bpos = assets.get("bust.pos");
+    const AssetChunk& bidx = assets.get("bust.idx");
+    CHECK(bpos.channels == 3 && bpos.texel_count() > 0);
+    CHECK(bidx.texel_count() % 3 == 0);
   }
 
   const AssetChunk& hairmesh = assets.get("hairmesh.pos");

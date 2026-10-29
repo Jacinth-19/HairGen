@@ -4,6 +4,7 @@
 #version 450
 
 #include "lib/common.glsl"
+#include "lib/sky.glsl"
 
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
@@ -49,73 +50,6 @@ vec3 sunOpticalDepth(vec3 p, vec3 sunDir) {
     od += vec3(d.x, d.y, 0.0) * stepLen;
   }
   return od;
-}
-
-// ---- procedural value noise ------------------------------------------------
-// The demo's cloud pass used the tiling 32^3 noise volume, which is too coarse
-// to sample at sky scale (trilinear blobs). A hash based value-noise FBM costs
-// a few ALU ops per step and gives smooth, scale-free cloud shapes.
-
-float hash13(vec3 p) {
-  p = fract(p * 0.1031);
-  p += dot(p, p.yzx + 33.33);
-  return fract((p.x + p.y) * p.z);
-}
-
-float valueNoise(vec3 p) {
-  vec3 i = floor(p);
-  vec3 f = p - i;
-  f = f * f * (3.0 - 2.0 * f);
-  float n000 = hash13(i + vec3(0.0, 0.0, 0.0));
-  float n100 = hash13(i + vec3(1.0, 0.0, 0.0));
-  float n010 = hash13(i + vec3(0.0, 1.0, 0.0));
-  float n110 = hash13(i + vec3(1.0, 1.0, 0.0));
-  float n001 = hash13(i + vec3(0.0, 0.0, 1.0));
-  float n101 = hash13(i + vec3(1.0, 0.0, 1.0));
-  float n011 = hash13(i + vec3(0.0, 1.0, 1.0));
-  float n111 = hash13(i + vec3(1.0, 1.0, 1.0));
-  return mix(mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
-             mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y), f.z);
-}
-
-float fbm(vec3 p) {
-  float sum = 0.0, amp = 0.5;
-  for (int i = 0; i < 5; ++i) {
-    sum += amp * valueNoise(p);
-    p = p * 2.07 + vec3(11.3, 7.7, 3.1);
-    amp *= 0.5;
-  }
-  return sum;
-}
-
-// Projected cloud deck. Coverage 0 = clear sky, 1 = overcast.
-vec3 cloudDeck(vec3 dir, vec3 sunDir) {
-  float coverage = frame.skyRef.w;
-  if (coverage <= 0.001) return vec3(0.0);
-  if (dir.y < 0.012) return vec3(0.0);
-  float t = 2600.0 / max(dir.y, 0.012);
-  vec2 uv = dir.xz * t * 0.00075;
-
-  // Domain warp so the deck forms filaments instead of round blobs.
-  vec2 warp = vec2(fbm(vec3(uv * 0.35, 1.7)), fbm(vec3(uv * 0.35 + 5.3, 8.1))) - 0.5;
-  float density = fbm(vec3(uv + warp * 1.4, 4.3));
-  density = density * 0.5 + 0.5;
-
-  float threshold = mix(0.72, 0.30, coverage);
-  float mask = smoothstep(threshold, threshold + 0.26, density);
-  // Fade toward the horizon (deck is infinitely far) and thin out overhead.
-  mask *= smoothstep(0.0, 0.15, dir.y) * (1.0 - 0.25 * smoothstep(0.8, 1.0, dir.y));
-  if (mask <= 0.001) return vec3(0.0);
-
-  // Cheap single-scattering shading: thick parts are shadowed, silver lining
-  // where the deck faces the sun.
-  float sunFacing = max(dot(dir, sunDir), 0.0);
-  float thick = smoothstep(0.30, 0.95, density);
-  // Cloud tops scatter white; the undersides pick up the blue of the sky.
-  vec3 shade = vec3(0.46, 0.54, 0.68) * (0.75 + 0.25 * (1.0 - thick));
-  vec3 lit = vec3(1.0, 0.98, 0.95) * (0.85 + 2.6 * pow(sunFacing, 6.0));
-  vec3 color = mix(shade, lit, clamp(density * 1.35, 0.0, 1.0));
-  return color * frame.skyRef.x * mask;
 }
 
 vec3 atmosphere(vec3 dir, vec3 sunDir) {
@@ -164,6 +98,20 @@ void main() {
   vec3 sunDir = normalize(frame.lightDir.xyz);
   vec3 color = atmosphere(dir, sunDir);
 
-  color += cloudDeck(dir, sunDir);
+  // ---- look: a deeper, more saturated sky with a warm horizon ---------------
+  // Physically the table is already correct; the extra saturation and the warm
+  // horizon scoop are deliberate grading so the blond/rosa hair separates from
+  // the background instead of sitting on a grey wall.
+  color = mix(vec3(luma(color)), color, 1.5);
+  float horizon = exp(-max(dir.y, 0.0) * 9.0);
+  vec2 sunAz = normalize(sunDir.xz + 1e-5);
+  vec2 dirAz = normalize(dir.xz + 1e-5);
+  float sunSide = pow(max(dot(dirAz, sunAz), 0.0), 2.0);
+  color += vec3(1.0, 0.52, 0.20) * horizon * (0.05 + 0.55 * sunSide) * frame.skyRef.x * 0.55;
+  color *= vec3(1.0, 1.0, 1.07);   // a touch more blue in the body of the sky
+
+  // NB: the cloud deck is *not* baked into this table. It is high frequency and
+  // the table doubles as the ambient/IBL source, which turned the deck into
+  // blotches on the face. background.frag adds the clouds for the visible sky.
   outColor = vec4(max(color, vec3(0.0)), 1.0);
 }

@@ -530,6 +530,7 @@ function renderClumpTexture() {
 
 const headPos = new Float32Array(obj_vert_pos);
 const headNrm = new Float32Array(obj_normals);
+const origNrm = new Float32Array(obj_normals);
 const headUV = new Float32Array(obj_texCoords);
 // triangle strip -> triangle list
 const strip = obj_indices;
@@ -538,6 +539,187 @@ for (let i = 0; i + 2 < strip.length; ++i) {
   const a = strip[i], b = strip[i + 1], c = strip[i + 2];
   if (a === b || b === c || a === c) continue;
   if (i & 1) headIdx.push(b, a, c); else headIdx.push(a, b, c);
+}
+// Neck cut: the source mesh is a bust whose shoulders degenerate into large
+// torn polygons (the demo never showed them). Keep everything above the neck
+// line plus the neck cylinder below it, and drop the shoulder mass.
+// Thresholds are in the centered model space (the vertices are transformed
+// already) and can be tweaked with HGEN_NECK_CUT / HGEN_NECK_RADIUS.
+{
+  // Below the jaw line only the neck cylinder survives; the shoulder mass
+  // reaches r ~ 0.85 at y ~ -0.5 and is what tore the silhouette.
+  const cut = process.env.HGEN_NECK_CUT !== undefined ? parseFloat(process.env.HGEN_NECK_CUT) : -0.30;
+  const radius = process.env.HGEN_NECK_RADIUS !== undefined ? parseFloat(process.env.HGEN_NECK_RADIUS) : 0.45;
+  const keep = (i) => headPos[3 * i + 1] >= cut;  // flat cut; the pedestal covers it
+  const kept = [];
+  let dropped = 0;
+  for (let i = 0; i < headIdx.length; i += 3) {
+    if (!keep(headIdx[i]) || !keep(headIdx[i + 1]) || !keep(headIdx[i + 2])) { dropped++; continue; }
+    kept.push(headIdx[i], headIdx[i + 1], headIdx[i + 2]);
+  }
+  headIdx.length = 0;
+  for (const v of kept) headIdx.push(v);
+  // --- relax the sheet ----------------------------------------------------
+  // The bust is a triangle strip harvested from a scan; it has creases and
+  // folds where neighbouring rows overlap, which read as hard dark wedges on
+  // the forehead and cheeks no matter how the normals are averaged. A few
+  // Laplacian passes over the welded vertex graph (positions, not normals)
+  // relax those folds while keeping the face's shape.
+  {
+    const smoothIters = process.env.HGEN_SMOOTH !== undefined ? parseInt(process.env.HGEN_SMOOTH, 10) : 3;
+    if (smoothIters > 0) {
+      const nv = headPos.length / 3;
+      const q = 1e4;
+      const weld = new Map();
+      const group = new Int32Array(nv);
+      for (let i = 0; i < nv; ++i) {
+        const k = `${Math.round(headPos[3 * i] * q)}_${Math.round(headPos[3 * i + 1] * q)}_${Math.round(headPos[3 * i + 2] * q)}`;
+        let g = weld.get(k);
+        if (g === undefined) { g = weld.size; weld.set(k, g); }
+        group[i] = g;
+      }
+      const acc = new Float64Array(weld.size * 3);
+      const cnt = new Int32Array(weld.size);
+      for (let pass = 0; pass < smoothIters; ++pass) {
+        acc.fill(0); cnt.fill(0);
+        for (let i = 0; i < nv; ++i) {
+          const g = group[i];
+          acc[3 * g] += headPos[3 * i];
+          acc[3 * g + 1] += headPos[3 * i + 1];
+          acc[3 * g + 2] += headPos[3 * i + 2];
+          cnt[g]++;
+        }
+        for (let i = 0; i < nv; ++i) {
+          const g = group[i];
+          const n = cnt[g];
+          if (n < 2) continue;
+          const ax = acc[3 * g] / n, ay = acc[3 * g + 1] / n, az = acc[3 * g + 2] / n;
+          // Weighted towards the group's own centroid: enough to relax folds,
+          // not enough to melt the nose.
+          headPos[3 * i] += (ax - headPos[3 * i]) * 0.55;
+          headPos[3 * i + 1] += (ay - headPos[3 * i + 1]) * 0.55;
+          headPos[3 * i + 2] += (az - headPos[3 * i + 2]) * 0.55;
+        }
+      }
+      console.log(`  relax: ${smoothIters} Laplacian passes over ${weld.size} welded vertices`);
+    }
+  }
+
+  // --- orientation + smooth normals --------------------------------------
+  // The source is a triangle *strip* whose winding flips from patch to patch, so
+  // raw face normals point inwards over whole regions. Two earlier attempts
+  // failed: per-triangle "point away from the centroid" flips break on concave
+  // anatomy (nose, ears, lips, the sheet under the jaw), and the demo's own
+  // obj_normals array is noisy. Do it properly:
+  //   1. weld vertices by position so the strip's seams do not hide adjacency,
+  //   2. BFS the edge graph, flipping neighbours so they agree on shared edges,
+  //   3. pick ONE global sign so the sheet faces outwards,
+  //   4. write the result back and rebuild area-weighted smooth normals.
+  // With consistent winding, interpolated normals are coherent; mixed winding
+  // interpolates opposite vectors and speckles the face under the sun.
+  {
+    const nv = headPos.length / 3;
+    const q = 1e4;
+    const weldId = new Map();
+    const groupOf = new Int32Array(nv);
+    for (let i = 0; i < nv; ++i) {
+      const k = `${Math.round(headPos[3 * i] * q)}_${Math.round(headPos[3 * i + 1] * q)}_${Math.round(headPos[3 * i + 2] * q)}`;
+      let g = weldId.get(k);
+      if (g === undefined) { g = weldId.size; weldId.set(k, g); }
+      groupOf[i] = g;
+    }
+    const triCount = headIdx.length / 3;
+    const tri = new Int32Array(headIdx);
+    for (let i = 0; i < tri.length; ++i) tri[i] = groupOf[tri[i]];
+
+    const edgeMap = new Map();
+    const ekey = (a, b) => (a < b ? a * 4194304 + b : b * 4194304 + a);
+    for (let t = 0; t < triCount; ++t) {
+      for (let e = 0; e < 3; ++e) {
+        const k = ekey(tri[3 * t + e], tri[3 * t + (e + 1) % 3]);
+        let list = edgeMap.get(k);
+        if (!list) edgeMap.set(k, (list = []));
+        list.push(t);
+      }
+    }
+
+    const flip = new Uint8Array(triCount);
+    const seen = new Uint8Array(triCount);
+    for (let seed = 0; seed < triCount; ++seed) {
+      if (seen[seed]) continue;
+      seen[seed] = 1;
+      const stack = [seed];
+      while (stack.length) {
+        const t = stack.pop();
+        for (let e = 0; e < 3; ++e) {
+          const a = tri[3 * t + e], b = tri[3 * t + (e + 1) % 3];
+          for (const u of edgeMap.get(ekey(a, b))) {
+            if (u === t) continue;
+            let dir = 0;
+            for (let f = 0; f < 3; ++f) {
+              const c = tri[3 * u + f], d = tri[3 * u + (f + 1) % 3];
+              if (c === a && d === b) dir = 1;
+              else if (c === b && d === a) dir = -1;
+            }
+            if (dir === 0) continue;
+            const want = flip[t] ^ (dir === 1 ? 1 : 0);
+            if (!seen[u]) { seen[u] = 1; flip[u] = want; stack.push(u); }
+          }
+        }
+      }
+    }
+
+    // Bail out of BFS noise: one global sign, decided by a centroid vote.
+    let cx3 = 0, cy3 = 0, cz3 = 0;
+    for (let i = 0; i < nv; ++i) { cx3 += headPos[3 * i]; cy3 += headPos[3 * i + 1]; cz3 += headPos[3 * i + 2]; }
+    cx3 /= nv; cy3 /= nv; cz3 /= nv;
+    let vote = 0;
+    for (let t = 0; t < triCount; ++t) {
+      const ia = headIdx[3 * t], ib = headIdx[3 * t + 1], ic = headIdx[3 * t + 2];
+      const ax = headPos[3 * ia], ay = headPos[3 * ia + 1], az = headPos[3 * ia + 2];
+      const ux = headPos[3 * ib] - ax, uy = headPos[3 * ib + 1] - ay, uz = headPos[3 * ib + 2] - az;
+      const vx = headPos[3 * ic] - ax, vy = headPos[3 * ic + 1] - ay, vz = headPos[3 * ic + 2] - az;
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      const mx = (ax + ax + ux + vx) / 3, my = (ay + ay + uy + vy) / 3, mz = (az + az + uz + vz) / 3;
+      let d = nx * (mx - cx3) + ny * (my - cy3) + nz * (mz - cz3);
+      if (flip[t]) d = -d;
+      vote += d;
+    }
+    const globalFlip = vote < 0 ? 1 : 0;
+    let flipped = 0;
+    for (let t = 0; t < triCount; ++t) {
+      if (flip[t] ^ globalFlip) {
+        const tmp = headIdx[3 * t + 1];
+        headIdx[3 * t + 1] = headIdx[3 * t + 2];
+        headIdx[3 * t + 2] = tmp;
+        ++flipped;
+      }
+    }
+
+    const acc = new Float64Array(weldId.size * 3);
+    for (let t = 0; t < triCount; ++t) {
+      const ia = headIdx[3 * t], ib = headIdx[3 * t + 1], ic = headIdx[3 * t + 2];
+      const ax = headPos[3 * ia], ay = headPos[3 * ia + 1], az = headPos[3 * ia + 2];
+      const ux = headPos[3 * ib] - ax, uy = headPos[3 * ib + 1] - ay, uz = headPos[3 * ib + 2] - az;
+      const vx = headPos[3 * ic] - ax, vy = headPos[3 * ic + 1] - ay, vz = headPos[3 * ic + 2] - az;
+      const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      for (const v of [ia, ib, ic]) { const g = groupOf[v]; acc[3 * g] += nx; acc[3 * g + 1] += ny; acc[3 * g + 2] += nz; }
+    }
+    for (let i = 0; i < nv; ++i) {
+      const g = groupOf[i];
+      const nx = acc[3 * g], ny = acc[3 * g + 1], nz = acc[3 * g + 2];
+      const len = Math.hypot(nx, ny, nz) || 1;
+      headNrm[3 * i] = nx / len; headNrm[3 * i + 1] = ny / len; headNrm[3 * i + 2] = nz / len;
+    }
+    console.log(`  normals: ${triCount} tris, ${weldId.size} welded verts, ${flipped} flipped outwards`);
+  }
+
+  if (process.env.HGEN_ORIGINAL_NORMALS) {
+    for (let i = 0; i < headNrm.length; ++i) headNrm[i] = origNrm[i];
+    console.log('  normals: demo obj_normals (compare only)');
+  }
+
+console.log(`  neck cut y=${cut.toFixed(2)} r=${radius.toFixed(2)}: kept ${kept.length / 3}, dropped ${dropped}`);
 }
 
 /* --------------------------------------------------------------- bundle */
@@ -550,6 +732,72 @@ const f32 = (arr) => { const b = Buffer.alloc(arr.length * 4); for (let i = 0; i
 const u8 = (arr) => Buffer.from(arr);
 const u16 = (arr) => { const b = Buffer.alloc(arr.length * 2); for (let i = 0; i < arr.length; ++i) b.writeUInt16LE(arr[i], i * 2); return b; };
 const u32 = (arr) => { const b = Buffer.alloc(arr.length * 4); for (let i = 0; i < arr.length; ++i) b.writeUInt32LE(arr[i], i * 4); return b; };
+
+/* ---------------------------------------------------------------- plinth */
+// The cut neck is finished with a tapered pedestal so the portrait reads as a
+// bust instead of a mesh with the body torn off. Everything here is generated
+// (the demo has no such geometry) but it is driven by the cut ring's measured
+// radius, and it is what lets the head sit on the ground plane with a shadow.
+
+const plinth = (() => {
+  // Measure the neck: mean centre and radius of the vertices just below the jaw.
+  // Only vertices that survived the neck cut count, otherwise the shoulder
+  // mass would inflate the radius.
+  const neckVerts = new Set();
+  for (const v of headIdx) {
+    const y = headPos[3 * v + 1];
+    if (y <= -0.24 && y >= -0.34) neckVerts.add(v);
+  }
+  let cx = 0, cz = 0, maxR = 0;
+  for (const v of neckVerts) { cx += headPos[3 * v]; cz += headPos[3 * v + 2]; }
+  if (neckVerts.size === 0) return null;
+  cx /= neckVerts.size; cz /= neckVerts.size;
+  for (const v of neckVerts)
+    maxR = Math.max(maxR, Math.hypot(headPos[3 * v] - cx, headPos[3 * v + 2] - cz));
+  const SEG = 64;
+  const topR = Math.max(0.40, maxR * 1.02);
+  // A tapered pedestal from just above the neck cut down to the ground plane.
+  const rings = [
+    [-0.285, topR * 1.0],
+    [-0.31, topR * 1.01],
+    [-0.35, topR * 0.92],
+    [-0.40, topR * 0.86],
+    [-0.45, topR * 0.84],
+    [-0.48, topR * 0.84],
+  ];
+  const pos = [], nrm = [], idx = [];
+  for (const [y, r] of rings) {
+    for (let i = 0; i < SEG; ++i) {
+      const a = (i / SEG) * Math.PI * 2;
+      pos.push(cx + Math.cos(a) * r, y, cz + Math.sin(a) * r);
+      nrm.push(Math.cos(a), 0.06, Math.sin(a));
+    }
+  }
+  for (let ring = 0; ring + 1 < rings.length; ++ring) {
+    for (let i = 0; i < SEG; ++i) {
+      const a = ring * SEG + i, b = ring * SEG + ((i + 1) % SEG);
+      const c2 = (ring + 1) * SEG + i, d = (ring + 1) * SEG + ((i + 1) % SEG);
+      idx.push(a, c2, b, b, c2, d);
+    }
+  }
+  // Bottom cap (faces down, only visible from below).
+  const baseY = rings[rings.length - 1][0];
+  const centre = pos.length / 3;
+  pos.push(cx, baseY, cz);
+  nrm.push(0, -1, 0);
+  const last = (rings.length - 1) * SEG;
+  for (let i = 0; i < SEG; ++i) idx.push(centre, last + ((i + 1) % SEG), last + i);
+  console.log(`  plinth: neck centre (${cx.toFixed(3)}, ${cz.toFixed(3)}), radius ${topR.toFixed(3)}, ${idx.length / 3} tris`);
+  return { pos, nrm, idx, topY: rings[0][0] };
+})();
+
+if (plinth) {
+  addChunk('bust.pos', plinth.pos.length / 3, 1, 1, 3, 2, f32(plinth.pos));
+  addChunk('bust.nrm', plinth.nrm.length / 3, 1, 1, 3, 2, f32(plinth.nrm));
+  addChunk('bust.idx', plinth.idx.length, 1, 1, 1, 3, u32(plinth.idx));
+}
+
+
 
 console.log('hair mesh texture: %dx%dx%d, %d levels', tex_hairmesh_width, tex_hairmesh_height, tex_hairmesh_depth, maxLevel + 1);
 
@@ -655,30 +903,37 @@ function lut(name, comps, dim) {
     for (let c = 0; c < comps; ++c) out[i * comps + c] = img.data[i * 4 + c];
   return { w: img.width, h: img.height, d: 1, data: out };
 }
-const mtlName = 'std_blond';
-// The demo checkout keeps the lookup PNGs at the repo root (materials/<name>/ in
-// the deployed site); accept both layouts.
-const lutPath = (f) => {
+// Every material ships its own set of Marschner lookup tables. `std_blond` is
+// the demo checkout's root PNGs; other sets live in materials/<name>/.
+const MATERIALS = ['std_blond', 'rosa'];
+const materialLutPath = (name, f) => {
   const candidates = [
-    path.join(SRC, 'materials', mtlName, f),
+    path.join(SRC, 'materials', name, f),
     path.join(SRC, f),
   ];
   for (const c of candidates) if (fs.existsSync(c)) return c;
-  throw new Error('lookup table not found: ' + f);
+  throw new Error(`lookup table not found for material ${name}: ${f}`);
 };
 
-const nttr = lut(lutPath('N_TT_R.png'), 4, 2);
-addChunk('N_TT_R', nttr.w, nttr.h, 1, 4, 0, u8(nttr.data));
-const ntrt = lut(lutPath('N_TRT.png'), 3, 2);
-addChunk('N_TRT', ntrt.w, ntrt.h, 1, 3, 0, u8(ntrt.data));
-const nttrgi = lut(lutPath('N_TT_R_GI.png'), 4, 2);
-addChunk('N_TT_R_GI', nttrgi.w, nttrgi.h, 1, 4, 0, u8(nttrgi.data));
-const ntrtgi = lut(lutPath('N_TRT_GI.png'), 3, 2);
-addChunk('N_TRT_GI', ntrtgi.w, ntrtgi.h, 1, 3, 0, u8(ntrtgi.data));
-const gi = lut(lutPath('GI.png'), 3, 3);
-addChunk('GI', gi.w, gi.h, gi.d, 3, 0, u8(gi.data));
-const mgi = lut(lutPath('M_GI.png'), 3, 2);
-addChunk('M_GI', mgi.w, mgi.h, 1, 3, 0, u8(mgi.data));
+for (const mat of MATERIALS) {
+  const tag = `mtl.${mat}.`;
+  const nttr = lut(materialLutPath(mat, 'N_TT_R.png'), 4, 2);
+  addChunk(tag + 'N_TT_R', nttr.w, nttr.h, 1, 4, 0, u8(nttr.data));
+  const ntrt = lut(materialLutPath(mat, 'N_TRT.png'), 3, 2);
+  addChunk(tag + 'N_TRT', ntrt.w, ntrt.h, 1, 3, 0, u8(ntrt.data));
+  const nttrgi = lut(materialLutPath(mat, 'N_TT_R_GI.png'), 4, 2);
+  addChunk(tag + 'N_TT_R_GI', nttrgi.w, nttrgi.h, 1, 4, 0, u8(nttrgi.data));
+  const ntrtgi = lut(materialLutPath(mat, 'N_TRT_GI.png'), 3, 2);
+  addChunk(tag + 'N_TRT_GI', ntrtgi.w, ntrtgi.h, 1, 3, 0, u8(ntrtgi.data));
+  const gi = lut(materialLutPath(mat, 'GI.png'), 3, 3);
+  addChunk(tag + 'GI', gi.w, gi.h, gi.d, 3, 0, u8(gi.data));
+  const mgi = lut(materialLutPath(mat, 'M_GI.png'), 3, 2);
+  addChunk(tag + 'M_GI', mgi.w, mgi.h, 1, 3, 0, u8(mgi.data));
+  console.log(`  material ${mat}: LUTs ${nttr.w}², GI ${gi.w}³, M_GI ${mgi.w}²`);
+}
+// The material table so the runtime does not have to hard-code the names.
+const matNames = MATERIALS.map((m) => m + '\0').join('') + '\0';
+addChunk('mtl.names', matNames.length, 1, 1, 1, 0, Buffer.from(matNames, 'ascii'));
 
 // skin albedo (july.jpg) - downsampled to 1024^2 RGB
 const skin = loadImage(path.join(SRC, 'july.jpg'));
@@ -688,7 +943,184 @@ for (let i = 0; i < skin.width * skin.height; ++i) {
   skinRGB[3 * i + 1] = skin.data[4 * i + 1];
   skinRGB[3 * i + 2] = skin.data[4 * i + 2];
 }
+// The photo is a UV unwrap on a black background: wherever the mesh's UVs fall
+// outside the island the sample is black, which rendered as holes in the face.
+// Dilate the island outwards (inpainting) so every UV has skin under it.
+{
+  const W = skin.width, H = skin.height;
+  const valid = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; ++i)
+    valid[i] = (skinRGB[3 * i] + skinRGB[3 * i + 1] + skinRGB[3 * i + 2]) > 24 ? 1 : 0;
+  let filled = 0;
+  for (let pass = 0; pass < 24; ++pass) {
+    const next = valid.slice();
+    let changed = 0;
+    for (let y = 0; y < H; ++y)
+      for (let x = 0; x < W; ++x) {
+        const i = y * W + x;
+        if (next[i]) continue;
+        let r = 0, g = 0, b = 0, n = 0;
+        for (let dy = -1; dy <= 1; ++dy)
+          for (let dx = -1; dx <= 1; ++dx) {
+            const nx2 = x + dx, ny2 = y + dy;
+            if (nx2 < 0 || ny2 < 0 || nx2 >= W || ny2 >= H) continue;
+            const j = ny2 * W + nx2;
+            if (!valid[j]) continue;
+            r += skinRGB[3 * j]; g += skinRGB[3 * j + 1]; b += skinRGB[3 * j + 2]; n++;
+          }
+        if (n === 0) continue;
+        skinRGB[3 * i] = Math.round(r / n);
+        skinRGB[3 * i + 1] = Math.round(g / n);
+        skinRGB[3 * i + 2] = Math.round(b / n);
+        next[i] = 2;  // filled this pass, usable by the next one
+        changed++;
+      }
+    for (let i = 0; i < W * H; ++i) if (next[i]) valid[i] = 1;
+    filled += changed;
+    if (!changed) break;
+  }
+  console.log(`  skin albedo: inpainted ${filled} texels around the UV island`);
+}
 addChunk('skin.albedo', skin.width, skin.height, 1, 3, 0, u8(skinRGB));
+
+/* ------------------------------------------------- head detail maps */
+// Optional detail maps that ship next to the demo (textures/). They are plain
+// 1024^2 images: a tangent-space normal map plus grayscale height, ambient
+// occlusion and specular masks.
+function detailMap(file, comps) {
+  const full = path.join(SRC, 'textures', file);
+  if (!fs.existsSync(full)) return null;
+  const img = loadImage(full);
+  const out = new Uint8Array(img.width * img.height * comps);
+  for (let i = 0; i < img.width * img.height; ++i)
+    for (let c = 0; c < comps; ++c) out[i * comps + c] = img.data[4 * i + Math.min(c, 2)];
+  return { w: img.width, h: img.height, data: out, comps };
+}
+
+// --- skin detail: normal map -------------------------------------------
+// The supplied `july_normal.png` is a *pore* detail map: a smooth base with one
+// texel of noise on top (mean |dN| is huge). Sampled 1:1 across a UV island that
+// is stretched over a whole face it renders as gravel, so it is only usable after
+// heavy prefiltering. The supplied height map is clean, so the relief we ship is
+// derived from it (Sobel -> tangent space) and the noise map is blended in at a
+// small weight for micro-detail.
+function boxDown(data, w, h, comps, factor) {
+  const ow = Math.max(1, Math.floor(w / factor)), oh = Math.max(1, Math.floor(h / factor));
+  const out = new Float32Array(ow * oh * comps);
+  for (let y = 0; y < oh; ++y)
+    for (let x = 0; x < ow; ++x) {
+      for (let c = 0; c < comps; ++c) {
+        let acc = 0, n = 0;
+        for (let j = 0; j < factor; ++j)
+          for (let i = 0; i < factor; ++i) {
+            const px = Math.min(w - 1, x * factor + i), py = Math.min(h - 1, y * factor + j);
+            acc += data[comps * (py * w + px) + c];
+            n++;
+          }
+        out[comps * (y * ow + x) + c] = acc / n;
+      }
+    }
+  return { w: ow, h: oh, data: out };
+}
+function upBilinear(src, w, h, comps) {
+  const out = new Float32Array(w * h * comps);
+  const sx = src.w / w, sy = src.h / h;
+  for (let y = 0; y < h; ++y)
+    for (let x = 0; x < w; ++x) {
+      const fx = Math.min(src.w - 1.001, Math.max(0, (x + 0.5) * sx - 0.5));
+      const fy = Math.min(src.h - 1.001, Math.max(0, (y + 0.5) * sy - 0.5));
+      const x0 = Math.floor(fx), y0 = Math.floor(fy), tx = fx - x0, ty = fy - y0;
+      for (let c = 0; c < comps; ++c) {
+        const a = src.data[comps * (y0 * src.w + x0) + c];
+        const b = src.data[comps * (y0 * src.w + x0 + 1) + c];
+        const d = src.data[comps * ((y0 + 1) * src.w + x0) + c];
+        const e = src.data[comps * ((y0 + 1) * src.w + x0 + 1) + c];
+        out[comps * (y * w + x) + c] = (a * (1 - tx) + b * tx) * (1 - ty) + (d * (1 - tx) + e * tx) * ty;
+      }
+    }
+  return out;
+}
+
+const heightMap = detailMap('july_height.png', 1);
+const noiseNormal = detailMap('july_normal.png', 3);
+if (heightMap) {
+  const W = 512, H = 512;                      // shipped resolution
+  // Sobel the height map into tangent space, at the shipped resolution.
+  const hSrc = upBilinear({ w: heightMap.w, h: heightMap.h, data: Float32Array.from(heightMap.data) },
+                          W, H, 1);
+  const out = new Uint8Array(W * H * 4);
+  const STRENGTH = parseFloat(process.env.HGEN_HEIGHT_STRENGTH || '7');
+  // High-pass the height field: the big relief (nose, lips, brow) is already in
+  // the mesh, and shading it twice gives blobby facets. Subtracting a blurred copy
+  // leaves only wrinkle/pore relief, which is what a detail normal map should be.
+  {
+    const blurred = upBilinear(boxDown(hSrc, W, H, 1, 24), W, H, 1);
+    for (let i = 0; i < W * H; ++i) hSrc[i] = Math.max(0, Math.min(255, hSrc[i] - blurred[i] + 128));
+  }
+  const at = (x, y) => hSrc[Math.min(H - 1, Math.max(0, y)) * W + Math.min(W - 1, Math.max(0, x))];
+  for (let y = 0; y < H; ++y)
+    for (let x = 0; x < W; ++x) {
+      const dhdu = (at(x + 1, y) - at(x - 1, y)) * 0.5;
+      const dhdv = (at(x, y - 1) - at(x, y + 1)) * 0.5;   // +v is up, rows run down
+      let nx = -dhdu / 255 * STRENGTH, ny = -dhdv / 255 * STRENGTH, nz = 1;
+      const len = Math.hypot(nx, ny, nz);
+      nx /= len; ny /= len; nz /= len;
+      const o = 4 * (y * W + x);
+      out[o] = Math.round((nx * 0.5 + 0.5) * 255);
+      out[o + 1] = Math.round((ny * 0.5 + 0.5) * 255);
+      out[o + 2] = Math.round((nz * 0.5 + 0.5) * 255);
+      out[o + 3] = 255;
+    }
+  if (noiseNormal) {
+    // Keep a whisper of the pore noise: 8x box filter, then blend 25%.
+    const coarse = boxDown(noiseNormal.data, noiseNormal.w, noiseNormal.h, 3, 8);
+    const up = upBilinear(coarse, W, H, 3);
+    for (let i = 0; i < W * H; ++i) {
+      const hx = out[4 * i] / 127.5 - 1, hy = out[4 * i + 1] / 127.5 - 1, hz = out[4 * i + 2] / 127.5 - 1;
+      // Authored Y-down; flip G for the Y-up TBN the shader builds.
+      const mx = up[3 * i] / 127.5 - 1, my = -(up[3 * i + 1] / 127.5 - 1), mz = up[3 * i + 2] / 127.5 - 1;
+      let nx = hx * 0.8 + mx * 0.2, ny = hy * 0.8 + my * 0.2, nz = hz * 0.8 + mz * 0.2;
+      const len = Math.hypot(nx, ny, nz) || 1;
+      out[4 * i] = Math.round((nx / len * 0.5 + 0.5) * 255);
+      out[4 * i + 1] = Math.round((ny / len * 0.5 + 0.5) * 255);
+      out[4 * i + 2] = Math.round((nz / len * 0.5 + 0.5) * 255);
+    }
+  }
+  addChunk('skin.normal', W, H, 1, 4, 0, u8(out));
+  console.log(`  skin.normal: ${W}x${H} (height-derived + prefiltered pores)`);
+}
+for (const [file, name] of [['july_ao.png', 'skin.ao'],
+                            ['july_spec.png', 'skin.spec']]) {
+  const m = detailMap(file, 1);
+  if (!m) continue;
+  addChunk(name, m.w, m.h, 1, 1, 0, u8(m.data));
+  console.log(`  ${name}: ${m.w}x${m.h}`);
+}
+
+// Low-frequency copy of the albedo. The photo carries its own baked lighting
+// (dark eye sockets, hair shadow); dividing by this in the shader flattens that
+// out so the renderer's own lighting reads instead of the photograph's.
+const FLAT = 48;
+const flat = new Uint8Array(FLAT * FLAT * 3);
+{
+  const sx = skin.width / FLAT, sy = skin.height / FLAT;
+  for (let y = 0; y < FLAT; ++y)
+    for (let x = 0; x < FLAT; ++x) {
+      const acc = [0, 0, 0];
+      let n = 0;
+      for (let j = 0; j < sy; ++j)
+        for (let i = 0; i < sx; ++i) {
+          const px = Math.min(skin.width - 1, Math.floor(x * sx + i));
+          const py = Math.min(skin.height - 1, Math.floor(y * sy + j));
+          const o = 3 * (py * skin.width + px);
+          acc[0] += skinRGB[o]; acc[1] += skinRGB[o + 1]; acc[2] += skinRGB[o + 2];
+          n++;
+        }
+      const o = 3 * (y * FLAT + x);
+      for (let c = 0; c < 3; ++c) flat[o + c] = Math.round(acc[c] / n);
+    }
+}
+addChunk('skin.flat', FLAT, FLAT, 1, 3, 0, u8(flat));
 
 /* --------------------------------------------------------- write bundle */
 

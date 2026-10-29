@@ -1,0 +1,11 @@
+# Build output
+HairGenVulkan/build/
+HairGenVulkan/shaders/spv/
+HairGenVulkan/tools/bin/
+
+# Intermediate animation frames (the GIF / AVI in media/ are the deliverables)
+HairGenVulkan/media/frames/
+
+# Editor / OS noise
+.DS_Store
+*.swp

@@ -18,7 +18,7 @@ vec3 viewRay(vec2 uv) {
 float groundAlbedo(vec2 xz) {
   float n = texture(tex_noise, vec3(xz * 0.08, 0.5)).r;
   float n2 = texture(tex_noise, vec3(xz * 0.31, 0.2)).g;
-  return 0.26 + 0.05 * n + 0.02 * n2;
+  return 0.115 + 0.035 * n + 0.018 * n2;
 }
 
 void main() {
@@ -37,8 +37,7 @@ void main() {
   float albedo = groundAlbedo(world.xz);
 
   vec3 pLight = (frame.lightView * vec4(world, 1.0)).xyz;
-  float tanT = 0.0;  // floor normal is perpendicular to the sun; keep a fixed bias
-  float bias = 0.0015;
+  float bias = 0.0045;  // the floor is nearly edge-on to the sun: bias generously
   float directF;
   vec3 spread;
   vec3 trans = shadowTransmittance(spread, directF, pLight, bias);
@@ -56,8 +55,13 @@ void main() {
 
   vec3 color = (direct + ambient) * albedo + bounce * 0.5;
 
+  // Contact occlusion under the bust so it sits on the floor instead of
+  // floating above it.
+  float r = length(world.xz - vec2(0.0, 0.0));
+  color *= mix(0.35, 1.0, smoothstep(0.18, 1.05, r));
+
   // Distance haze towards the horizon colour.
-  float haze = 1.0 - exp(-t * 0.06);
+  float haze = 1.0 - exp(-t * 0.045);
   vec3 horizon = skyRadiance(normalize(vec3(dir.x, abs(dir.y) * 0.15 + 0.02, dir.z)));
   color = mix(color, horizon * 0.85, haze);
 

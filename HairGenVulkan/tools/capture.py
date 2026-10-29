@@ -20,13 +20,21 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
+# Hair dye swatches: the renderer ships rosa by default and the dye layer can
+# recolour the fibres to anything, so the sheet walks the palette.
 STYLES = {
-    'blond': ['--style', 'blond'],
-    'brown': ['--style', 'brown'],
-    'rosa': ['--style', 'rosa'],
-    'curly': ['--style', 'curly'],
-    'straight': ['--style', 'straight'],
+    'rosa': ['--dye', 'rosa'],
+    'blonde': ['--dye', 'blonde', '--dye-strength', '0.45'],
+    'copper': ['--dye', 'copper'],
+    'auburn': ['--dye', 'auburn'],
+    'burgundy': ['--dye', 'burgundy'],
+    'violet': ['--dye', 'violet'],
+    'teal': ['--dye', 'teal'],
+    'platinum': ['--dye', 'platinum'],
 }
+
+# Procedural hairstyles (one guide mesh, restyled by the operator stack).
+HAIRSTYLES = ['bob', 'sleek', 'wavy', 'curly', 'afro', 'pixie', 'long', 'punk']
 
 # ---------------------------------------------------------------- helpers
 
@@ -43,8 +51,13 @@ def have(tool):
     return shutil.which(tool) is not None
 
 
+# Quality knobs shared by every still: 4x MSAA plus a 2x supersample, and a
+# 2048^2 shadow map (the hair shadow lands on the face, so resolution shows).
+QUALITY = ['--samples', '4', '--ssaa', '2', '--shadow-res', '2048']
+
+
 def render(binary, out, size, extra):
-    run([binary, '--out', out, '--size', str(size)] + extra)
+    run([binary, '--out', out, '--size', str(size)] + QUALITY + extra)
 
 
 def montage(paths, labels, out, tile=None):
@@ -165,13 +178,21 @@ def main():
     if args.only in (None, 'stills'):
         hero = os.path.join(out, 'stills', 'hero.png')
         print('[capture] hero still')
-        render(binary, hero, size, ['--samples', '4', '--sun-intensity', '1.0'])
-        stills.append((hero, 'default (blond bob)'))
+        render(binary, hero, size, ['--sun-intensity', '1.0'])
+        stills.append((hero, 'default: rosa dye, bob'))
 
+        # Dye palette.
         for name, extra in STYLES.items():
-            p = os.path.join(out, 'stills', 'style_%s.png' % name)
-            print('[capture] style', name)
-            render(binary, p, size, ['--samples', '4'] + extra)
+            p = os.path.join(out, 'stills', 'dye_%s.png' % name)
+            print('[capture] dye', name)
+            render(binary, p, size, extra)
+            stills.append((p, 'dye: ' + name))
+
+        # Hairstyle presets.
+        for name in HAIRSTYLES:
+            p = os.path.join(out, 'stills', 'hairstyle_%s.png' % name)
+            print('[capture] hairstyle', name)
+            render(binary, p, size, ['--style', name])
             stills.append((p, 'style: ' + name))
 
         # Lighting / post-processing sweep.
@@ -186,7 +207,7 @@ def main():
         for name, extra in sweep:
             p = os.path.join(out, 'stills', name + '.png')
             print('[capture]', name)
-            render(binary, p, size, ['--samples', '4'] + extra)
+            render(binary, p, size, extra)
             stills.append((p, name))
 
         # Hair control sweep (each one changes a single group).
@@ -201,7 +222,7 @@ def main():
         for name, extra in controls:
             p = os.path.join(out, 'stills', 'control_%s.png' % name)
             print('[capture] control', name)
-            render(binary, p, size, ['--samples', '4'] + extra)
+            render(binary, p, size, extra)
             stills.append((p, 'control: ' + name))
 
         # Demo-fidelity modes ported from the reference source.
@@ -215,14 +236,39 @@ def main():
         for name, extra in modes:
             p = os.path.join(out, 'stills', name + '.png')
             print('[capture]', name)
-            render(binary, p, size, ['--samples', '4'] + extra)
+            render(binary, p, size, extra)
             stills.append((p, name))
 
         # A high resolution hero for print / README.
-        render(binary, os.path.join(out, 'hero_1536.png'), 1536, ['--samples', '4'])
+        run([binary, '--out', os.path.join(out, 'hero_1536.png'), '--size', '1536', '--samples', '4',
+             '--shadow-res', '2048'])
         # Nice-to-have: anti-aliasing comparison (1x vs 4x MSAA crop).
-        render(binary, os.path.join(out, 'aa_off.png'), size, ['--samples', '1'])
-        render(binary, os.path.join(out, 'aa_on.png'), size, ['--samples', '4'])
+        run([binary, '--out', os.path.join(out, 'aa_off.png'), '--size', str(size), '--samples', '1',
+             '--ssaa', '1'])
+        run([binary, '--out', os.path.join(out, 'aa_on.png'), '--size', str(size), '--samples', '4',
+             '--ssaa', '2'])
+
+        # Dye palette sheet (all swatches at a glance).
+        dye_paths = [os.path.join(out, 'stills', 'dye_%s.png' % n) for n in STYLES]
+        dye_paths = [p for p in dye_paths if os.path.exists(p)]
+        if have('montage') and dye_paths:
+            print('[capture] dye sheet')
+            tmp = os.path.join(out, 'dye_sheet.png')
+            montage(dye_paths, list(STYLES.keys()), tmp, tile='4x')
+            run(['convert', tmp, '-resize', '1600x', '-quality', '92', '-strip',
+                 os.path.join(out, 'dye_sheet.jpg')])
+            os.remove(tmp)
+
+        # Hairstyle sheet.
+        hair_paths = [os.path.join(out, 'stills', 'hairstyle_%s.png' % n) for n in HAIRSTYLES]
+        hair_paths = [p for p in hair_paths if os.path.exists(p)]
+        if have('montage') and hair_paths:
+            print('[capture] hairstyle sheet')
+            tmp = os.path.join(out, 'hairstyle_sheet.png')
+            montage(hair_paths, HAIRSTYLES, tmp, tile='4x')
+            run(['convert', tmp, '-resize', '1600x', '-quality', '92', '-strip',
+                 os.path.join(out, 'hairstyle_sheet.jpg')])
+            os.remove(tmp)
 
     if args.only in (None, 'sheet'):
         if not stills:

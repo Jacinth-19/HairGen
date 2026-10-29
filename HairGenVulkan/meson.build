@@ -46,6 +46,30 @@ miniz_dep = declare_dependency(
   link_with: miniz_lib,
   include_directories: include_directories('third_party/miniz'))
 
+# ---- shaders -----------------------------------------------------------------
+# The SPIR-V blobs are checked in (src/shaders_generated.hpp) so a plain build
+# needs no shader toolchain. Run `ninja -C build shaders` after editing a shader;
+# `ninja -C build shaders-check` (also part of a default build) fails loudly if
+# the embedded blobs are older than the sources, so they cannot go stale
+# unnoticed.
+glslang = find_program('glslangValidator',
+  dirs: [join_paths(meson.current_source_dir(), 'tools', 'bin')],
+  required: false)
+python = find_program('python3', required: false)
+gen_shaders = []
+if glslang.found() and python.found()
+  run_target('shaders',
+    command: [python, files('tools/compile_shaders.py'), '--glslang', glslang])
+  shader_check = custom_target('shaders-check',
+    output: 'shaders-check.stamp',
+    command: [python, files('tools/compile_shaders.py'), '--check-stale',
+              '--stamp', '@OUTPUT@'],
+    build_always_stale: true,
+    build_by_default: true,
+    console: true)
+  gen_shaders = [shader_check]
+endif
+
 # ---- renderer core (shared by the executable and the tests)
 core_src = files(
   'src/assets.cpp',
@@ -61,6 +85,10 @@ if dl_dep.found()
   core_deps += dl_dep
 endif
 
+# vk_util.cpp embeds the generated SPIR-V blob header, so regenerate/rebuild it
+# whenever the shaders change (otherwise shader edits silently do nothing).
+core_src += [files('src/shaders_generated.hpp'), gen_shaders]
+
 hairgen_core = static_library('hairgen_core', core_src,
   include_directories: inc,
   dependencies: core_deps,
@@ -74,18 +102,6 @@ core_link = declare_dependency(
 executable('hairgen', 'src/main.cpp',
   dependencies: core_link,
   install: true)
-
-# ---- shaders -----------------------------------------------------------------
-# The SPIR-V blobs are checked in (src/shaders_generated.hpp) so a plain build
-# needs no shader toolchain. `ninja -C build shaders` regenerates them.
-glslang = find_program('glslangValidator',
-  dirs: [join_paths(meson.current_source_dir(), 'tools', 'bin')],
-  required: false)
-python = find_program('python3', required: false)
-if glslang.found() and python.found()
-  run_target('shaders',
-    command: [python, files('tools/compile_shaders.py'), '--glslang', glslang])
-endif
 
 # ---- asset bundle ------------------------------------------------------------
 # assets/hairgen_assets.bin is generated from the web demo's data files by

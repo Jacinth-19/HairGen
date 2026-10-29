@@ -24,7 +24,7 @@ struct Image {
   VkDeviceMemory memory = VK_NULL_HANDLE;
   VkImageView view = VK_NULL_HANDLE;
   VkFormat format = VK_FORMAT_UNDEFINED;
-  uint32_t width = 0, height = 0, depth = 1, layers = 1;
+  uint32_t width = 0, height = 0, depth = 1, layers = 1, mips = 1;
   VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
@@ -58,8 +58,10 @@ struct Gpu {
   Buffer create_buffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags mem_flags,
                        const void* data = nullptr);
   void destroy_buffer(Buffer& b);
+  // `mip_levels > 1` allocates a chain that upload_image() fills by blitting.
   Image create_image_2d(uint32_t w, uint32_t h, VkFormat format, VkImageUsageFlags usage,
-                        VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
+                        VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
+                        uint32_t mip_levels = 1);
   Image create_image_3d(uint32_t w, uint32_t h, uint32_t d, VkFormat format, VkImageUsageFlags usage);
   void destroy_image(Image& img);
   // Uploads texel data (tightly packed) into a freshly created image and leaves it in

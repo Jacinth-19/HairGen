@@ -54,6 +54,30 @@ jitter, clump targets from a 256² clump-centre map, kink / curl / frizz / fuzz
 displacement in the hair-mesh surface frame, ribbon expansion in screen space
 and a length-variation cut-off.
 
+**Hair dye.** The fibre lookup tables bake in one hair colour, so a dye is a
+*chromatic* remap of the scattered radiance: the target colour is normalised by
+its brightest channel (absorption semantics - a dye can only subtract light) and
+the fibre's luminance is redistributed into that hue, with the specular bands
+kept partly white. Per-strand jitter and a root→tip ramp (the `MIN_COLOR`
+gradient from `mravella/hair`) then give the mass depth instead of a flat wig.
+Twenty named colours plus any `#RRGGBB`, and the default is **rosa**, not blond.
+A Kajiya-Kay wrap-diffuse + tight highlight pair (`sqrt(1-|T·L|)`,
+`pow(sqrt(1-|T·H|), 96)`, both from `mravella/hair`) is added on top of the
+Marschner tables so the fibres keep a glossy band.
+
+**Hairstyles.** One guide mesh, eight styles: `bob`, `sleek`, `wavy`, `curly`,
+`afro`, `pixie`, `long`, `punk`. Each is a full set of fuzz / frizz / kink /
+clump / curl operator values - the "author many styles from one hair mesh by
+stacking procedural operators" idea from the SIGGRAPH'24 hair-mesh paper.
+
+**Skin detail.** The supplied head maps (`normal`, `height`, `ao`, `specular`)
+are wired into `head.frag`: a TBN built from UV gradients (the mesh carries no
+tangents), a mipmapped tangent-space detail normal, an AO mask that attenuates
+ambient + fill, and a specular mask. The raw normal map is one texel of pore
+noise over a smooth base, so the exporter derives the shipped normal from the
+(clean) height field - high-passed so the big relief is not shaded twice - and
+folds in a prefiltered quarter of the original for micro-detail.
+
 **Shading.** Marschner fiber model with the demo's LUTs (`N_TT_R`, `N_TRT`,
 `N_TT_R_GI`, `N_TRT_GI`, `GI`, `M_GI`), a multiple-scattering hair shadow model
 (Beer-Lambert through a hair depth map, which is what makes blond hair glow when
@@ -104,6 +128,15 @@ loads them, applies the demo's own centering transform and writes one binary blo
 | `noise.js` | 32³ RGB noise volume | kink / curl / frizz / fuzz carrier + cloud FBM (`noise3d`) |
 | `mtl.js` | `hairMaterial`: `a_f`, `R_dev`, `TT_dev`, `TRT_dev` | fibre absorption + LUT normalisation |
 | `shaders.js` | GLSL ES sources | ported to `shaders/*.vert|frag`, `lib/hair_shading.glsl` |
+| `textures/july_{normal,height,ao,spec}.png` | head detail maps (1024², supplied separately) | `skin.normal` (height-derived, 512²), `skin.ao`, `skin.spec` |
+| `materials/rosa/*` | the rosa Marschner LUT set | `mtl.rosa.*` - `--material rosa` |
+
+External references mined for techniques (nothing is copied verbatim):
+
+| source | taken |
+|---|---|
+| SIGGRAPH'24 hair-mesh paper | procedural styling operators over one guide mesh (the `--style` presets), texture-space strand layout, LOD thinking |
+| `github.com/mravella/hair` | `diffuse = sqrt(1-|T·L|)`, `spec = pow(sqrt(1-|T·H|), shininess)`, per-strand `colorVariation`, root→tip `MIN_COLOR` gradient |
 
 `root.rot` is exported but unused: in the demo it only feeds the (disabled)
 simulation path; `obj_vert_nor`/`obj_vert_tex` are unused by the demo itself.
@@ -116,7 +149,12 @@ hairgen --out render.png [options]
   --size N | --width N --height N     resolution (default 768)
   --samples N                          MSAA: 1, 2, 4, 8 (default 4)
   --frames N --sequence DIR --anim NAME --fps N
-  --style blond|brown|rosa|curly|straight
+  --style bob|sleek|wavy|curly|afro|pixie|long|punk   procedural hairstyle
+  --dye HEX|NAME                       hair dye (#RRGGBB, or rosa|blonde|copper|
+                                       auburn|burgundy|black|violet|teal|silver|
+                                       platinum|sunset|mint|lilac|... )
+  --dye-strength F                     0 = original fibre colour, 1 = fully dyed
+  --root-darken F --color-var F        root shadow / per-strand colour jitter
   --clump F --clump-size F --curl F --curl-twists F --frizz F --kink F --fuzz F
   --density F --length-var F --hair-count N --segments N --width-px F
   --rot R --tilt R --dist D --fov F
@@ -173,11 +211,12 @@ meson test -C build          # add VK_ICD_FILENAMES=... to include the render te
 
 | file | contents |
 |---|---|
-| `media/stills/*.png` | hero shot, 5 hair styles, 4 lighting setups, 6 control sweeps, 5 mode stills |
+| `media/stills/*.png` | hero shot, 8 dye swatches, 8 hairstyles, 4 lighting setups, 6 control sweeps, 5 mode stills |
 | `media/stills/mode_*.png` | lines vs ribbons, root samples, hair-mesh cage, no-collide |
 | `media/mode_comparison.png` | the four modes side by side |
 | `media/hero_1536.png` | 1536² hero render |
-| `media/contact_sheet.jpg` | 12-up overview |
+| `media/contact_sheet.jpg` | 12-up overview (hero + dye palette + hairstyles) |
+| `media/dye_sheet.jpg` | the full dye palette on one sheet |
 | `media/aa_off.png`, `media/aa_on.png` | 1× vs 4× MSAA |
 | `media/orbit.gif` | 40-frame animated GIF (480², 20 fps) |
 | `media/orbit.avi` | MJPEG video of the same animation |
@@ -190,7 +229,9 @@ src/            main.cpp (CLI), renderer.{hpp,cpp}, vk_util (device/queues/image
                 pipelines/descriptors), vk_loader (runtime loader + ICD scan),
                 assets (bundle reader), png (writer), web (preview server), math
 shaders/        GLSL 450 sources + lib/common.glsl, lib/shadow.glsl,
-                lib/hair_shading.glsl  ->  src/shaders_generated.hpp
+                lib/hair_shading.glsl, lib/sky.glsl  ->  src/shaders_generated.hpp
+                (edit a shader, then `ninja -C build shaders && ninja -C build`;
+                 the `shaders-check` target fails the build on a stale header)
 tools/          export_assets.js, compile_shaders.py, capture.py
 tests/          unit + integration tests (meson)
 assets/         hairgen_assets.bin, web/{index.html,style.css,app.js}

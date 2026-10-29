@@ -1,5 +1,6 @@
 #include "vk_util.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -204,6 +205,7 @@ void Gpu::init(const std::string& icd_override, bool enable_validation, bool pre
   HGEN_LOAD_DEV(vkCmdSetScissor)
   HGEN_LOAD_DEV(vkCmdCopyImageToBuffer)
   HGEN_LOAD_DEV(vkCmdCopyBufferToImage)
+  HGEN_LOAD_DEV(vkCmdBlitImage)
   HGEN_LOAD_DEV(vkCmdPipelineBarrier)
   HGEN_LOAD_DEV(vkCreateFence)
   HGEN_LOAD_DEV(vkDestroyFence)
@@ -311,14 +313,15 @@ void Gpu::destroy_buffer(Buffer& b) {
 }
 
 Image Gpu::create_image_2d(uint32_t w, uint32_t h, VkFormat format, VkImageUsageFlags usage,
-                           VkSampleCountFlagBits samples) {
+                           VkSampleCountFlagBits samples, uint32_t mip_levels) {
   Image img;
   img.width = w; img.height = h; img.depth = 1; img.format = format;
+  img.mips = mip_levels < 1 ? 1 : mip_levels;
   VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   ci.imageType = VK_IMAGE_TYPE_2D;
   ci.format = format;
   ci.extent = {w, h, 1};
-  ci.mipLevels = 1;
+  ci.mipLevels = img.mips;
   ci.arrayLayers = 1;
   ci.samples = samples;
   ci.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -341,7 +344,7 @@ Image Gpu::create_image_2d(uint32_t w, uint32_t h, VkFormat format, VkImageUsage
   bool depth = format == VK_FORMAT_D32_SFLOAT || format == VK_FORMAT_D16_UNORM ||
                format == VK_FORMAT_D24_UNORM_S8_UINT || format == VK_FORMAT_D32_SFLOAT_S8_UINT;
   vi.subresourceRange.aspectMask = depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-  vi.subresourceRange.levelCount = 1;
+  vi.subresourceRange.levelCount = img.mips;
   vi.subresourceRange.layerCount = 1;
   check(api.vkCreateImageView(device, &vi, nullptr, &img.view), "vkCreateImageView");
   return img;
@@ -393,20 +396,30 @@ void Gpu::upload_image(Image& img, const void* data, VkDeviceSize bytes) {
                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                  data);
   VkCommandBuffer cmd = begin_once();
+  const uint32_t mips = img.mips < 1 ? 1 : img.mips;
 
-  VkImageMemoryBarrier to_dst{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-  to_dst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  to_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-  to_dst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  to_dst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  to_dst.image = img.image;
-  to_dst.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-  to_dst.subresourceRange.levelCount = 1;
-  to_dst.subresourceRange.layerCount = 1;
-  to_dst.srcAccessMask = 0;
-  to_dst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  api.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                           0, nullptr, 0, nullptr, 1, &to_dst);
+  auto barrier = [&](VkImageLayout from, VkImageLayout to, VkAccessFlags src, VkAccessFlags dst,
+                     uint32_t base, uint32_t count) {
+    VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    b.oldLayout = from;
+    b.newLayout = to;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = img.image;
+    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    b.subresourceRange.baseMipLevel = base;
+    b.subresourceRange.levelCount = count;
+    b.subresourceRange.layerCount = 1;
+    b.srcAccessMask = src;
+    b.dstAccessMask = dst;
+    api.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT |
+                                 (dst & VK_ACCESS_SHADER_READ_BIT ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : 0),
+                             0, 0, nullptr, 0, nullptr, 1, &b);
+  };
+
+  barrier(VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+          VK_ACCESS_TRANSFER_WRITE_BIT, 0, mips);
 
   VkBufferImageCopy region{};
   region.bufferOffset = 0;
@@ -421,14 +434,31 @@ void Gpu::upload_image(Image& img, const void* data, VkDeviceSize bytes) {
   api.vkCmdCopyBufferToImage(cmd, staging.buffer, img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                              &region);
 
-  VkImageMemoryBarrier to_read = to_dst;
-  to_read.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-  to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  to_read.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  to_read.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-  api.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
-                           &to_read);
+  // Box-filtered mip chain. Level 0 becomes the blit source, every later level
+  // is written once, so the barriers simply walk down the chain.
+  for (uint32_t i = 1; i < mips; ++i) {
+    barrier(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, i - 1, 1);
+    VkImageBlit blit{};
+    blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.srcSubresource.mipLevel = i - 1;
+    blit.srcSubresource.layerCount = 1;
+    blit.srcOffsets[1] = {int32_t(std::max(1u, img.width >> (i - 1))),
+                          int32_t(std::max(1u, img.height >> (i - 1))), 1};
+    blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.dstSubresource.mipLevel = i;
+    blit.dstSubresource.layerCount = 1;
+    blit.dstOffsets[1] = {int32_t(std::max(1u, img.width >> i)),
+                          int32_t(std::max(1u, img.height >> i)), 1};
+    api.vkCmdBlitImage(cmd, img.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, img.image,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+  }
+
+  if (mips > 1)
+    barrier(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT, 0, mips - 1);
+  barrier(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+          VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, mips - 1, 1);
   end_once(cmd);
   img.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   destroy_buffer(staging);
@@ -445,7 +475,7 @@ VkSampler Gpu::create_sampler(VkFilter filter, VkSamplerAddressMode wrap, bool c
   si.addressModeW = wrap;
   si.compareEnable = compare ? VK_TRUE : VK_FALSE;
   si.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-  si.maxLod = 0.0f;
+  si.maxLod = mip_linear ? VK_LOD_CLAMP_NONE : 0.0f;
   VkSampler sampler = VK_NULL_HANDLE;
   check(api.vkCreateSampler(device, &si, nullptr, &sampler), "vkCreateSampler");
   return sampler;

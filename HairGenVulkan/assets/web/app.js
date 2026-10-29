@@ -177,7 +177,9 @@ function flush() {
 
 function wireSimpleInputs() {
   const ids = ['sunRot', 'sunTilt', 'sunIntensity', 'exposure', 'bloom', 'clouds',
-               'vignette', 'rot', 'tilt', 'dist'];
+               'vignette', 'rot', 'tilt', 'dist',
+               // hair dye
+               'dyeStrength', 'rootDarken', 'colorVar'];
   for (const id of ids) {
     const input = document.getElementById(id);
     if (!input) continue;
@@ -210,10 +212,38 @@ function wireSimpleInputs() {
     state.renderMode = parseInt(mode.value, 10);
   }
 
+  // ---- dye: colour input + preset select post the hex string directly
+  const dye = document.getElementById('dye');
+  const dyePreset = document.getElementById('dyePreset');
+  if (dye) {
+    dye.addEventListener('input', () => { state.dye = dye.value; queueUpdate(); });
+    state.dye = dye.value;
+  }
+  if (dyePreset) {
+    dyePreset.addEventListener('change', () => {
+      if (!dyePreset.value) return;
+      if (dye) dye.value = dyePreset.value;
+      state.dye = dyePreset.value;
+      queueUpdate();
+    });
+  }
+
+  // ---- hairstyle presets (procedural operator stacks)
+  const hairstyle = document.getElementById('hairstyle');
+  if (hairstyle) {
+    hairstyle.addEventListener('change', () => {
+      if (hairstyle.value) state.style = hairstyle.value;
+      queueUpdate();
+    });
+  }
+
   const style = document.getElementById('hairColor');
   if (style) {
     style.addEventListener('change', () => {
       state.style = style.value;
+      // rosa ships its own Marschner lookup tables; everything else reuses the
+      // demo's std_blond set and only changes the absorption preset.
+      state.material = style.value === 'rosa' ? 1 : 0;
       queueUpdate();
     });
     state.style = style.value;

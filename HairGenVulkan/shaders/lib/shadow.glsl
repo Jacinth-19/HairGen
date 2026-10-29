@@ -74,12 +74,37 @@ vec3 hairShadow(out vec3 spread, out float directF, vec3 pShad) {
 }
 
 // Object visibility * hair transmittance for a world-space light coordinate.
+//
+// The hair map is a single depth layer, so a few strands over the forehead
+// would otherwise stamp hard blotches on the skin. Nine taps spread over two
+// texels turn that into a soft gradient, which is what a real strand cloud does.
 vec3 shadowTransmittance(out vec3 spread, out float directF, vec3 pLight, float bias) {
   vec3 pShad = pLight * 0.5 + 0.5;
   float visObj = objectVisibility(pShad, bias);
-  vec3 trans = hairShadow(spread, directF, pShad);
-  directF *= visObj;
-  return trans * visObj;
+
+  vec2 texel = 2.0 / vec2(textureSize(hairShadMap, 0));
+  vec3 accT = vec3(0.0), spreadAcc = vec3(0.0);
+  float accD = 0.0, weightSum = 0.0;
+  for (int y = -1; y <= 1; ++y) {
+    for (int x = -1; x <= 1; ++x) {
+      float w = (x == 0 && y == 0) ? 4.0 : ((x == 0 || y == 0) ? 2.0 : 1.0);
+      vec3 sp;
+      float df;
+      vec3 offset = vec3(vec2(float(x), float(y)) * texel, 0.0);
+      vec3 tr = hairShadow(sp, df, pShad + offset);
+      accT += tr * w;
+      accD += df * w;
+      spreadAcc += sp * w;
+      weightSum += w;
+    }
+  }
+  accT /= weightSum;
+  accD /= weightSum;
+  spreadAcc /= weightSum;
+
+  spread = spreadAcc;
+  directF = accD * visObj;
+  return accT * visObj;
 }
 
 // Demo-compatible entry point used by the hair shader.

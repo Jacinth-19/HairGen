@@ -27,8 +27,17 @@ void main() {
 
   vec3 mapped = tonemapACES(hdr);
   // Gentle contrast curve keeps the hair detail readable after the filmic knee.
-  mapped = mix(mapped, mapped * mapped * (3.0 - 2.0 * mapped), 0.15);
-  mapped = linearToSRGB(mapped);
+  mapped = mix(mapped, mapped * mapped * (3.0 - 2.0 * mapped), 0.22);
+
+  // Grade: a little more saturation, cool shadows and warm highlights. This is
+  // what gives the straw-coloured render its colour separation.
+  float l = luma(mapped);
+  mapped = mix(vec3(l), mapped, 1.18);
+  vec3 shadowTint = vec3(0.94, 0.98, 1.10);
+  vec3 highTint = vec3(1.06, 1.01, 0.94);
+  mapped *= mix(shadowTint, highTint, smoothstep(0.05, 0.75, l));
+
+  mapped = linearToSRGB(clamp(mapped, 0.0, 1.0));
 
   float dither = (hash(vUV * frame.resolution.xy + pc.p.w) - 0.5) / 255.0;
   outColor = vec4(mapped + dither, 1.0);

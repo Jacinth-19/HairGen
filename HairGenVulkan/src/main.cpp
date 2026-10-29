@@ -29,6 +29,7 @@ void usage() {
       "  --size N              square render resolution (default 768)\n"
       "  --width N --height N  explicit resolution\n"
       "  --samples N           MSAA sample count: 1, 2, 4, 8 (default 4)\n"
+      "  --ssaa N              supersample N x N and box-filter down (default 1)\n"
       "  --frames N            render N frames (default 1)\n"
       "  --sequence DIR        write DIR/frame_%%04d.png for every frame\n"
       "  --anim NAME           none | orbit | sweep | light (default none)\n"
@@ -43,7 +44,16 @@ void usage() {
       "  --curl F --curl-twists F --curl-freq F\n"
       "  --frizz F --frizz-freq F --kink F --kink-freq F --fuzz F\n"
       "  --density F --length-var F --fiber-r/-g/-b F\n"
-      "  --no-hair --no-head --no-ground\n"
+      "  --no-hair --no-head --no-ground --ground-y F\n"
+      "  --material NAME       hair material: std_blond | rosa (own Marschner LUTs)\n"
+      "  --style NAME          hairstyle preset: bob|sleek|wavy|curly|afro|pixie|long|punk\n"
+      "  --dye HEX|NAME        hair dye colour (hex, or rosa|platinum|copper|auburn|\n"
+      "                        black|violet|teal|silver|burgundy|sunset)\n"
+      "  --dye-strength F      0 = original fibre colour, 1 = fully dyed (default 0.88)\n"
+      "  --root-darken F       how much darker the roots are (default 0.45)\n"
+      "  --color-var F         per-strand tint jitter (default 0.16)\n"
+      "  --r-dev D --tt-dev D --trt-dev D  fibre lobe widths (degrees)\n"
+      "  --ambient F           hair ambient/skylight strength\n"
       "  --lines               render mode 0: strand centre lines (demo default)\n"
       "  --render-mode N       0 = lines, 1 = ribbons (default 1)\n"
       "  --root-samples        use the demo's explicit root table (july_rootsamples.js)\n"
@@ -133,6 +143,7 @@ int main(int argc, char** argv) {
     else if (match(a, "--width")) opt.width = std::atoi(next(a).c_str());
     else if (match(a, "--height")) opt.height = std::atoi(next(a).c_str());
     else if (match(a, "--samples")) opt.samples = std::atoi(next(a).c_str());
+    else if (match(a, "--ssaa")) opt.supersample = std::max(1, std::atoi(next(a).c_str()));
     else if (match(a, "--frames")) opt.frames = std::atoi(next(a).c_str());
     else if (match(a, "--sequence")) opt.sequence_dir = next(a);
     else if (match(a, "--anim")) opt.animation = next(a);
@@ -174,7 +185,39 @@ int main(int argc, char** argv) {
     else if (match(a, "--fiber-r")) scene.hair.a_f[0] = float(std::atof(next(a).c_str()));
     else if (match(a, "--fiber-g")) scene.hair.a_f[1] = float(std::atof(next(a).c_str()));
     else if (match(a, "--fiber-b")) scene.hair.a_f[2] = float(std::atof(next(a).c_str()));
+    else if (match(a, "--r-dev")) scene.hair.r_dev = float(std::atof(next(a).c_str()));
+    else if (match(a, "--tt-dev")) scene.hair.tt_dev = float(std::atof(next(a).c_str()));
+    else if (match(a, "--trt-dev")) scene.hair.trt_dev = float(std::atof(next(a).c_str()));
+    else if (match(a, "--ambient")) scene.hair.ambient = float(std::atof(next(a).c_str()));
     else if (match(a, "--length-var")) scene.hair.length_var = float(std::atof(next(a).c_str()));
+    else if (match(a, "--material")) {
+      std::string s = next(a);
+      if (s == "rosa") {
+        scene.hair.material = 1;
+        scene.hair.a_f[0] = 0.68f; scene.hair.a_f[1] = 0.36f; scene.hair.a_f[2] = 0.42f;
+      } else if (s == "blond" || s == "std_blond") {
+        scene.hair.material = 0;
+      } else {
+        std::fprintf(stderr, "unknown material: %s\n", s.c_str());
+        std::exit(2);
+      }
+    }
+    else if (match(a, "--style")) {
+      std::string s = next(a);
+      if (!hgen::apply_hairstyle(scene.hair, s)) {
+        std::fprintf(stderr, "unknown hairstyle: %s\n", s.c_str());
+        std::exit(2);
+      }
+    }
+    else if (match(a, "--dye")) {
+      std::string s = next(a);
+      float c[3];
+      if (hgen::parse_hair_color(s, c)) { scene.hair.dye[0] = c[0]; scene.hair.dye[1] = c[1]; scene.hair.dye[2] = c[2]; }
+      else { std::fprintf(stderr, "unknown dye colour: %s\n", s.c_str()); std::exit(2); }
+    }
+    else if (match(a, "--dye-strength")) scene.hair.dye_strength = float(std::atof(next(a).c_str()));
+    else if (match(a, "--root-darken")) scene.hair.root_darken = float(std::atof(next(a).c_str()));
+    else if (match(a, "--color-var")) scene.hair.color_variation = float(std::atof(next(a).c_str()));
     else if (match(a, "--render-mode")) scene.hair.render_mode = std::atoi(next(a).c_str());
     else if (match(a, "--lines")) scene.hair.render_mode = 0;
     else if (match(a, "--root-samples")) scene.hair.use_root_samples = true;
@@ -184,6 +227,7 @@ int main(int argc, char** argv) {
     else if (match(a, "--no-hair")) scene.hair.show_hair = false;
     else if (match(a, "--no-head")) scene.hair.show_head = false;
     else if (match(a, "--no-ground")) scene.sky.show_ground = false;
+    else if (match(a, "--ground-y")) scene.sky.ground_y = float(std::atof(next(a).c_str()));
     else if (match(a, "--rot")) scene.camera.rot = float(std::atof(next(a).c_str()));
     else if (match(a, "--tilt")) scene.camera.tilt = float(std::atof(next(a).c_str()));
     else if (match(a, "--dist")) scene.camera.dist = float(std::atof(next(a).c_str()));
@@ -229,7 +273,9 @@ int main(int argc, char** argv) {
     const std::string bundle = asset_dir + "/hairgen_assets.bin";
     assets.load(bundle);
 
-    Renderer renderer(gpu, assets, scene, opt.width, opt.height, opt.shadow_res, opt.samples);
+    const int ss = std::max(1, opt.supersample);
+    const int render_w = opt.width * ss, render_h = opt.height * ss;
+    Renderer renderer(gpu, assets, scene, render_w, render_h, opt.shadow_res, opt.samples);
     printf("[hairgen] %dx%d, %dx MSAA, %d strands x %d segments, %d bundles\n", opt.width, opt.height,
            renderer.samples(), scene.hair.hair_count, scene.hair.segments, 22);
 
@@ -237,6 +283,25 @@ int main(int argc, char** argv) {
       WebServer server(gpu, assets, renderer, serve_port);
       return server.run();
     }
+
+    // Box-filter a supersampled frame back to the requested resolution.
+    auto downsample = [&](const std::vector<uint8_t>& src, int sw, int sh) {
+      if (ss == 1) return src;
+      std::vector<uint8_t> dst(size_t(opt.width) * opt.height * 4);
+      const float inv = 1.0f / float(ss * ss);
+      for (int y = 0; y < opt.height; ++y)
+        for (int x = 0; x < opt.width; ++x) {
+          float acc[4] = {0, 0, 0, 0};
+          for (int dy = 0; dy < ss; ++dy)
+            for (int dx = 0; dx < ss; ++dx) {
+              const size_t o = (size_t(y * ss + dy) * sw + (x * ss + dx)) * 4;
+              for (int c = 0; c < 4; ++c) acc[c] += float(src[o + c]);
+            }
+          const size_t d = (size_t(y) * opt.width + x) * 4;
+          for (int c = 0; c < 4; ++c) dst[d + c] = uint8_t(clampf(acc[c] * inv, 0.0f, 255.0f));
+        }
+      return dst;
+    };
 
     // Still frames / sequences.
     const int frames = std::max(1, opt.frames);
@@ -258,12 +323,12 @@ int main(int argc, char** argv) {
       if (!opt.sequence_dir.empty()) {
         char name[512];
         snprintf(name, sizeof(name), "%s/frame_%04d.png", opt.sequence_dir.c_str(), f);
-        auto px = renderer.read_pixels();
-        write_png_rgba(name, renderer.width(), renderer.height(), px);
+        auto px = downsample(renderer.read_pixels(), renderer.width(), renderer.height());
+        write_png_rgba(name, opt.width, opt.height, px);
         printf("\r[hairgen] frame %d/%d  %.1f ms  %s     ", f + 1, frames, stats.cpu_ms, name);
       } else {
-        auto px = renderer.read_pixels();
-        write_png_rgba(opt.output_png, renderer.width(), renderer.height(), px);
+        auto px = downsample(renderer.read_pixels(), renderer.width(), renderer.height());
+        write_png_rgba(opt.output_png, opt.width, opt.height, px);
         printf("[hairgen] wrote %s in %.1f ms (%u triangles)\n", opt.output_png.c_str(), stats.cpu_ms,
                stats.triangles);
       }

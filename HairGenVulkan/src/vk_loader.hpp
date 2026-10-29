@@ -87,6 +87,7 @@ namespace hgen {
   X(vkCmdSetScissor)                                                    \
   X(vkCmdCopyImageToBuffer)                                             \
   X(vkCmdCopyBufferToImage)                                             \
+  X(vkCmdBlitImage)                                                     \
   X(vkCmdPipelineBarrier)                                               \
   X(vkCreateFence)                                                      \
   X(vkDestroyFence)                                                     \

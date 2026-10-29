@@ -23,7 +23,9 @@ layout(set = 0, binding = 0) uniform FrameBlock {
   vec4 fiber;        // a_f (rgb), R_dev (deg)
   vec4 fiber2;       // TT_dev, TRT_dev, density, ambientStrength
   vec4 skyRef;       // sunIntensity, exposure, bloom, cloudCoverage
-  vec4 misc;         // groundY, showGround, shadowTexelUV scale, frame index
+  vec4 misc;         // groundY, showGround, debug view id, frame index
+  vec4 dye;          // xyz = dye colour (linear), w = dye strength
+  vec4 dye2;         // rootDarken, perStrandVariation, sheen, unused
 } frame;
 
 layout(set = 0, binding = 1) uniform sampler2DShadow objShadMap;
@@ -31,6 +33,10 @@ layout(set = 0, binding = 2) uniform sampler2D hairShadMap;  // raw depth, manua
 layout(set = 0, binding = 3) uniform sampler2D skyLUT;
 layout(set = 0, binding = 4) uniform sampler2D bloomTex;
 layout(set = 0, binding = 5) uniform sampler2D hdrTex;  // main HDR target (post passes)
+layout(set = 0, binding = 6) uniform sampler2D skinFlat;   // low-frequency skin albedo
+layout(set = 0, binding = 7) uniform sampler2D skinNormal; // tangent-space detail normal
+layout(set = 0, binding = 8) uniform sampler2D skinAO;     // ambient occlusion mask
+layout(set = 0, binding = 9) uniform sampler2D skinSpec;   // specular mask
 
 layout(set = 1, binding = 0) uniform sampler3D tex_hairmesh;
 layout(set = 1, binding = 1) uniform sampler2D tex_uv;

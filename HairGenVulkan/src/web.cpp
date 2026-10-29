@@ -79,16 +79,17 @@ bool json_bool(const std::string& body, const char* key, bool& out) {
 }
 
 // Material presets from the demo (SetHairMaterial() in hairmesh.js).
+// name, absorption a_f, material index (0 = std_blond LUTs, 1 = rosa LUTs)
 struct HairPreset {
   const char* name;
   float a_f[3];
+  int material;
 };
-
 const HairPreset kHairPresets[] = {
-    {"std_blond", {0.507475266f, 0.465571405f, 0.394347166f}},
-    {"mid_blond", {0.610475266f, 0.498571405f, 0.294347166f}},
-    {"rosa", {0.707475266f, 0.385571405f, 0.344347166f}},
-    {"brown", {0.347475266f, 0.245571405f, 0.164347166f}},
+    {"std_blond", {0.507475266f, 0.465571405f, 0.394347166f}, 0},
+    {"mid_blond", {0.610475266f, 0.498571405f, 0.294347166f}, 0},
+    {"rosa", {0.68f, 0.36f, 0.42f}, 1},
+    {"brown", {0.347475266f, 0.245571405f, 0.164347166f}, 0},
 };
 
 // Finds "key":"value" in a flat JSON object.
@@ -110,10 +111,14 @@ void apply_params(Scene& s, const std::string& body) {
   float f;
   bool b;
   std::string str;
+  // "style" first tries a hairstyle (procedural operator presets), then falls
+  // back to the demo's fibre/colour presets.
+  if (json_string(body, "style", str)) apply_hairstyle(s.hair, str);
   if (json_string(body, "style", str)) {
     for (const HairPreset& preset : kHairPresets) {
       if (str == preset.name) {
         for (int i = 0; i < 3; ++i) s.hair.a_f[i] = preset.a_f[i];
+        s.hair.material = preset.material;
         break;
       }
     }
@@ -160,6 +165,15 @@ void apply_params(Scene& s, const std::string& body) {
   if (json_number(body, "curlExp", f)) s.hair.curl_exp = f;
   if (json_number(body, "curlTwistExp", f)) s.hair.curl_twist_exp = f;
   if (json_number(body, "ambient", f)) s.hair.ambient = f;
+  // ---- dye
+  if (json_string(body, "dye", str)) {
+    float c[3];
+    if (parse_hair_color(str, c)) { s.hair.dye[0] = c[0]; s.hair.dye[1] = c[1]; s.hair.dye[2] = c[2]; }
+  }
+  if (json_number(body, "dyeStrength", f)) s.hair.dye_strength = f;
+  if (json_number(body, "rootDarken", f)) s.hair.root_darken = f;
+  if (json_number(body, "colorVar", f)) s.hair.color_variation = f;
+  if (json_bool(body, "headShadow", b)) s.hair.head_casts_shadow = b;
   if (json_number(body, "sunRot", f)) s.sky.sun_rot = f;
   if (json_bool(body, "showHair", b)) s.hair.show_hair = b;
   if (json_bool(body, "showHead", b)) s.hair.show_head = b;
@@ -167,6 +181,7 @@ void apply_params(Scene& s, const std::string& body) {
   // demo fidelity controls: render mode, explicit roots, collider push-out,
   // and the "show hair mesh" cage overlay.
   if (json_number(body, "renderMode", f)) s.hair.render_mode = int(f);
+  if (json_number(body, "material", f)) s.hair.material = int(f);
   if (json_bool(body, "rootSamples", b)) s.hair.use_root_samples = b;
   if (json_bool(body, "collide", b)) s.hair.collide = b;
   if (json_bool(body, "showHairMesh", b)) s.hair.show_hairmesh = b;
@@ -346,12 +361,13 @@ int WebServer::run() {
         snprintf(json, sizeof(json),
                  "{\"rot\":%.4f,\"tilt\":%.4f,\"dist\":%.4f,\"fuzz\":%.4f,"
                  "\"clump\":%.4f,\"curl\":%.4f,\"width\":%d,\"height\":%d,"
-                 "\"renderMode\":%d,\"rootSamples\":%s,\"collide\":%s,\"showHairMesh\":%s}",
+                 "\"renderMode\":%d,\"rootSamples\":%s,\"collide\":%s,\"showHairMesh\":%s,"
+                 "\"material\":%d}",
                  scene.camera.rot, scene.camera.tilt, scene.camera.dist, scene.hair.fuzz_amount,
                  scene.hair.clump_percent, scene.hair.curl_amount, s.renderer.width(),
                  s.renderer.height(), scene.hair.render_mode,
                  scene.hair.use_root_samples ? "true" : "false", scene.hair.collide ? "true" : "false",
-                 scene.hair.show_hairmesh ? "true" : "false");
+                 scene.hair.show_hairmesh ? "true" : "false", scene.hair.material);
         send_text(cfd, "200 OK", "application/json", json);
       } else if (path == "/snapshot.png") {
         std::vector<uint8_t> data = render_frame(s, false);
