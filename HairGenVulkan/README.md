@@ -629,11 +629,46 @@ meson setup build --reconfigure -Dintegration_render=true && meson test -C build
 | `media/hair_shading_sweep.gif` | the same clip as a looping GIF |
 | `media/hair_shading_sweep.jpg` | four frames of it as a filmstrip |
 | `media/July_Head_preview.png` | the exported `assets/July_Head.glb` rasterised from four sides by `tools/preview_glb.py` (a self-check of geometry + UVs + embedded textures) |
+| `media/head_geometry.jpg` | **the July head with the geometry restored**: before/after from four sides - the mosaic of holes the asset pipeline used to punch through the skull, temples and cheeks, and the clean neck collar that replaced the torn one |
+
+## Head geometry: why the head had missing pieces
+
+The July head is a scan bust delivered as one long triangle *strip*. The demo draws
+it with `gl.drawElements(gl.TRIANGLE_STRIP, ...)` and never has to repair anything;
+the asset exporter does, because it has to turn the strip into something a Vulkan
+index buffer can hold and because the demo's shoulders had to go (`july-low.js`
+degenerates into large torn polygons there, the demo simply never framed them).
+
+One of those repairs was wrong. To delete the strip's *stitch* triangles - the long
+slivers that appear where the strip jumps between scan rows, which render as a flat
+pale sheet folded over the cheek - the exporter dropped every triangle whose longest
+edge exceeded 4.5× the mesh's median edge. A sliver is long, but on a scan a healthy
+triangle on the crown is long too, and the median edge of this mesh is 1.6 cm in model
+units: **872 of 15 841 triangles were being deleted from the skull, the temples and
+the cheeks**, which is the mosaic of holes that showed the sky through the head.
+
+`media/head_geometry.jpg` is that before/after from four sides. Two changes:
+
+- **the stitch test is now a sliver test** - a triangle is dropped only when it is
+  long *and* thin (longest edge > `2.0 × median` **and** longest/shortest > `8`),
+  which takes 48 triangles instead of 872 and leaves the sheet gone while the
+  solid geometry stays. `HGEN_STITCH_MULT` / `HGEN_STITCH_ASPECT` tune both terms.
+- **the neck cut clips instead of deletes**: dropping every triangle that straddled
+  the plane left a sawtooth collar (a triangle crossing the line vanished, its
+  neighbour stopped short). The cut now keeps the straddling triangles and the
+  exporter finishes with a half-space clip that splits 126 of them at the plane and
+  interpolates the new vertices, so the bust ends on a clean ring inside the
+  pedestal. `HGEN_NECK_CUT` moves the plane.
+
+The result is a closed-looking head from every angle (9 546 verts / 15 986 tris), and
+the hair no longer has gaps to fall through at the temples. Neither change touches
+the *demo's* data: positions, UVs, the supplied normals and the strip→list winding
+rule are exactly what `july-low.js` holds.
 
 ## Head export: `assets/July_Head.glb`
 
 The head the renderer draws, plus every skin map, in one self-contained glTF 2.0
-binary (3.59 MiB, no sidecar files, no external references):
+binary (3.60 MiB, no sidecar files, no external references):
 
 ```sh
 node tools/export_glb.js                        # -> assets/July_Head.glb
@@ -643,14 +678,14 @@ meson test -C build glb                         # structural check (tests/test_g
 
 The geometry is read out of `assets/hairgen_assets.bin`, not re-derived from
 `july-low.js`, so the GLB is by construction the same head the renderer draws -
-same centring and 2-unit normalisation, same neck cut, same normals, same
-13 k-triangle mesh. The exporter still re-checks the one thing a bundle cannot
+same centring and 2-unit normalisation, same neck clip, same normals, same
+16 k-triangle mesh. The exporter still re-checks the one thing a bundle cannot
 tell it: that the triangle winding agrees with the vertex normals, and flips it if
 it does not (it agrees, so nothing is touched).
 
 | glTF | contents | size |
 |---|---|---|
-| mesh | 9 294 verts / 14 969 tris, `POSITION` `NORMAL` `TEXCOORD_0`, 16-bit indices, single-sided, CCW | 0.6 MiB |
+| mesh | 9 546 verts / 15 986 tris, `POSITION` `NORMAL` `TEXCOORD_0`, 16-bit indices, single-sided, CCW | 0.6 MiB |
 | `baseColorTexture` | `skin.albedo` - `july.jpg`, UV island inpainted outward so no texel under the island is black | 1024², 1.56 MiB |
 | `normalTexture` | `skin.normal` - tangent space, derived from the supplied height map with prefiltered pores | 512², 229 KiB |
 | `occlusionTexture` R + `metallicRoughnessTexture` G/B | `skin.ao` / `255 - skin.spec` / 0 - the usual ORM packing, so one image serves both slots | 1024², 749 KiB |

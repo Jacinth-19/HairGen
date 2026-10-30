@@ -528,10 +528,14 @@ function renderClumpTexture() {
 
 /* ------------------------------------------------------------ head mesh */
 
-const headPos = new Float32Array(obj_vert_pos);
-const headNrm = new Float32Array(obj_normals);
-const origNrm = new Float32Array(obj_normals);
-const headUV = new Float32Array(obj_texCoords);
+let headPos = new Float32Array(obj_vert_pos);
+let headNrm = new Float32Array(obj_normals);
+let origNrm = new Float32Array(obj_normals);
+let headUV = new Float32Array(obj_texCoords);
+// Hoisted out of the cut block: the neck plane is used twice now - once to drop
+// the shoulder mass, once (at the very end) to cleanly clip the collar.
+const NECK_CUT = process.env.HGEN_NECK_CUT !== undefined ? parseFloat(process.env.HGEN_NECK_CUT) : -0.30;
+const NECK_RADIUS = process.env.HGEN_NECK_RADIUS !== undefined ? parseFloat(process.env.HGEN_NECK_RADIUS) : 0.45;
 // triangle strip -> triangle list
 const strip = obj_indices;
 const headIdx = [];
@@ -548,8 +552,8 @@ for (let i = 0; i + 2 < strip.length; ++i) {
 {
   // Below the jaw line only the neck cylinder survives; the shoulder mass
   // reaches r ~ 0.85 at y ~ -0.5 and is what tore the silhouette.
-  const cut = process.env.HGEN_NECK_CUT !== undefined ? parseFloat(process.env.HGEN_NECK_CUT) : -0.30;
-  const radius = process.env.HGEN_NECK_RADIUS !== undefined ? parseFloat(process.env.HGEN_NECK_RADIUS) : 0.45;
+  const cut = NECK_CUT;
+  const radius = NECK_RADIUS;
   // The scan includes a *hair shell* over the scalp: a large sheet that rises
   // above the skull and folds forwards over the forehead. The demo is always
   // seen with strands on top of it, so it never showed; here it pokes through
@@ -558,15 +562,16 @@ for (let i = 0; i + 2 < strip.length; ++i) {
   const scalpCut = process.env.HGEN_SCALP_CUT !== undefined ? parseFloat(process.env.HGEN_SCALP_CUT) : 10.0;
   // ... and only towards the face: the back of the head is needed for the
   // silhouette, and the hair shell there is inside the hair mass anyway.
-  const keep = (i) => {
-    const y = headPos[3 * i + 1];
-    if (y < cut) return false;
-    return y < scalpCut;
-  };
+  const keep = (i) => headPos[3 * i + 1] < scalpCut;
+  const below = (i) => headPos[3 * i + 1] < cut;
   const kept = [];
   let dropped = 0;
   for (let i = 0; i < headIdx.length; i += 3) {
     if (!keep(headIdx[i]) || !keep(headIdx[i + 1]) || !keep(headIdx[i + 2])) { dropped++; continue; }
+    // Triangles that *straddle* the neck plane are kept on purpose: the
+    // half-space clip at the end of the export splits them, which is what makes
+    // the collar a clean edge instead of a sawtooth.
+    if (below(headIdx[i]) && below(headIdx[i + 1]) && below(headIdx[i + 2])) { dropped++; continue; }
     kept.push(headIdx[i], headIdx[i + 1], headIdx[i + 2]);
   }
   headIdx.length = 0;
@@ -672,42 +677,51 @@ for (let i = 0; i + 2 < strip.length; ++i) {
                 + `supplied normals (${triCount - flipped} already agreed)`);
 
     // ---- drop strip "stitch" triangles ---------------------------------
-    // The source mesh is a triangle strip. Where the export cuts a row (the neck
-    // cut) or where the strip jumps between scan rows, the strip connectivity
-    // turns into long, thin triangles that span unrelated parts of the head; on
-    // screen they are the flat pale sheet folded across the cheek. Compare each
-    // triangle's longest edge against the median edge of the mesh and drop the
-    // ones that are far above it.
+    // The source mesh is a triangle strip. Where the strip jumps between scan
+    // rows the connectivity turns into triangles that span unrelated parts of
+    // the head; on screen they are the flat pale sheet folded across the cheek.
+    //
+    // A stitch is long *and thin*: one edge crosses the jump, the other two are
+    // tiny. Filtering on length alone is what punched the mosaic of holes
+    // through the skull, the temples and the cheeks -- a healthy triangle on the
+    // crown is just as long, it is simply not a sliver (872 of 15841 triangles
+    // were being deleted that way, which is exactly the "missing mesh parts"
+    // look). Test the aspect ratio as well, so coarse-but-solid geometry stays.
     {
-      const triLen = new Float64Array(triCount);
-      const edges = new Float64Array(triCount);
+      const longestE = new Float64Array(triCount);
+      const aspectE = new Float64Array(triCount);
       for (let t = 0; t < triCount; ++t) {
         const ia = headIdx[3 * t], ib = headIdx[3 * t + 1], ic = headIdx[3 * t + 2];
         const dist = (a, b) => Math.hypot(headPos[3 * a] - headPos[3 * b],
                                           headPos[3 * a + 1] - headPos[3 * b + 1],
                                           headPos[3 * a + 2] - headPos[3 * b + 2]);
-        const e = Math.max(dist(ia, ib), dist(ib, ic), dist(ic, ia));
-        triLen[t] = e;
-        edges[t] = e;
+        const e0 = dist(ia, ib), e1 = dist(ib, ic), e2 = dist(ic, ia);
+        const lo = Math.min(e0, e1, e2), hi = Math.max(e0, e1, e2);
+        longestE[t] = hi;
+        aspectE[t] = hi / Math.max(lo, 1e-6);
       }
-      const sorted = Array.from(edges).sort((a, b) => a - b);
+      const sorted = Array.from(longestE).sort((a, b) => a - b);
       const median = sorted[Math.floor(sorted.length * 0.5)] || 0.01;
       // HGEN_STITCH_MULT tunes how aggressive the strip-repair is (relative to
-      // the median edge of the mesh).
+      // the median edge of the mesh), HGEN_STITCH_ASPECT how sliver-like a
+      // triangle has to be before it counts as a stitch.
       const mult = process.env.HGEN_STITCH_MULT !== undefined
-        ? parseFloat(process.env.HGEN_STITCH_MULT) : 4.5;
+        ? parseFloat(process.env.HGEN_STITCH_MULT) : 2.0;
+      const aspectMin = process.env.HGEN_STITCH_ASPECT !== undefined
+        ? parseFloat(process.env.HGEN_STITCH_ASPECT) : 8.0;
       const limit = Math.max(median * mult, 0.02);
       const keptT = [];
       let stitches = 0;
       for (let t = 0; t < triCount; ++t) {
-        if (triLen[t] > limit) { ++stitches; continue; }
+        if (longestE[t] > limit && aspectE[t] > aspectMin) { ++stitches; continue; }
         keptT.push(headIdx[3 * t], headIdx[3 * t + 1], headIdx[3 * t + 2]);
       }
       headIdx.length = 0;
       for (const v of keptT) headIdx.push(v);
       triCount = headIdx.length / 3;
       console.log(`  stitch triangles dropped: ${stitches} / ${stitches + triCount}`
-                  + ` (median edge ${median.toFixed(4)}, limit ${limit.toFixed(3)})`);
+                  + ` (long > ${limit.toFixed(3)} and aspect > ${aspectMin};`
+                  + ` median edge ${median.toFixed(4)})`);
     }
 
     const acc = new Float64Array(weldId.size * 3);
@@ -1015,6 +1029,55 @@ if (plinth) {
 
 
 console.log('hair mesh texture: %dx%dx%d, %d levels', tex_hairmesh_width, tex_hairmesh_height, tex_hairmesh_depth, maxLevel + 1);
+
+/* ------------------------------------------------- clean neck cut (clip) */
+
+// The neck cut drops whole triangles that straddle y = NECK_CUT, and its edge
+// is a sawtooth: a triangle that reaches below the line disappears, its
+// neighbour that stops just short stays, so the collar reads as torn mesh.
+// Clip the half-space instead - split the straddling triangles at the plane and
+// interpolate the new vertices - so the bust ends on a clean ring that the
+// pedestal closes. Done last, right before the bundle is written, so no later
+// pass has to know about vertices that only exist after the cut.
+{
+  const p = Array.from(headPos), n = Array.from(headNrm), t = Array.from(headUV);
+  const out = [];
+  let clipped = 0, removed = 0;
+  const newVert = (a, b) => {
+    const ya = p[3 * a + 1], yb = p[3 * b + 1];
+    const s = (NECK_CUT - ya) / (yb - ya);
+    const v = p.length / 3;
+    for (let k = 0; k < 3; ++k) p[3 * v + k] = p[3 * a + k] + (p[3 * b + k] - p[3 * a + k]) * s;
+    for (let k = 0; k < 3; ++k) n[3 * v + k] = n[3 * a + k] + (n[3 * b + k] - n[3 * a + k]) * s;
+    const len = Math.hypot(n[3 * v], n[3 * v + 1], n[3 * v + 2]) || 1;
+    for (let k = 0; k < 3; ++k) n[3 * v + k] /= len;
+    for (let k = 0; k < 2; ++k) t[2 * v + k] = t[2 * a + k] + (t[2 * b + k] - t[2 * a + k]) * s;
+    return v;
+  };
+  for (let i = 0; i < headIdx.length; i += 3) {
+    const tri = [headIdx[i], headIdx[i + 1], headIdx[i + 2]];
+    const inside = tri.map((v) => p[3 * v + 1] >= NECK_CUT);
+    if (inside[0] && inside[1] && inside[2]) { out.push(tri[0], tri[1], tri[2]); continue; }
+    if (!inside[0] && !inside[1] && !inside[2]) { ++removed; continue; }
+    // Sutherland-Hodgman against one plane: walk the edges, keep the inside
+    // ends, and insert the crossing point. Winding is preserved.
+    const poly = [];
+    for (let k = 0; k < 3; ++k) {
+      const a = tri[k], b = tri[(k + 1) % 3];
+      if (inside[k]) poly.push(a);
+      if (inside[k] !== inside[(k + 1) % 3]) poly.push(newVert(a, b));
+    }
+    for (let k = 1; k + 1 < poly.length; ++k) out.push(poly[0], poly[k], poly[k + 1]);
+    ++clipped;
+  }
+  headPos = Float32Array.from(p);
+  headNrm = Float32Array.from(n);
+  headUV = Float32Array.from(t);
+  headIdx.length = 0;
+  for (const v of out) headIdx.push(v);
+  console.log(`  neck clip y=${NECK_CUT.toFixed(2)}: ${clipped} triangles split, `
+              + `${removed} dropped, ${headIdx.length / 3} tris, ${headPos.length / 3} verts`);
+}
 
 addChunk('head.pos', headPos.length / 3, 1, 1, 3, 2, f32(headPos));
 addChunk('head.nrm', headNrm.length / 3, 1, 1, 3, 2, f32(headNrm));
