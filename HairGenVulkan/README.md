@@ -487,7 +487,10 @@ render mutex, so the sliders keep working while a stream is live.
 ## Tests
 
 ```sh
-meson test -C build          # add VK_ICD_FILENAMES=... to include the render test
+meson test -C build
+# with no GPU at all (the render test then runs on software Vulkan):
+tools/softvulkan.sh --prefix /tmp/softvk && eval "$(tools/softvulkan.sh --prefix /tmp/softvk --env)"
+meson setup build --reconfigure -Dintegration_render=true && meson test -C build
 ```
 
 * `test_math` - vector/matrix math, view-projection round trip.
@@ -502,7 +505,8 @@ meson test -C build          # add VK_ICD_FILENAMES=... to include the render te
   reproduces a scene, and the ImGui panel really draws: four frames over a flat
   buffer, at least five windows docked, and synthetic input reaches the scene.
   It needs no GPU, so it runs everywhere.
-* `integration_render` - renders a frame headlessly, validates the PNG, checks
+* `integration_render` - renders a frame headlessly (on real hardware or on the
+  software Vulkan stack, see below), validates the PNG, checks
   the image is not flat, and verifies the hair pass changes ≥10 % of pixels.
   It skips (meson `77`) when no Vulkan device is available.
 
@@ -526,6 +530,9 @@ meson test -C build          # add VK_ICD_FILENAMES=... to include the render te
 | `media/orbit.gif` | 40-frame animated GIF (480², 20 fps) |
 | `media/orbit.avi` | MJPEG video of the same animation |
 | `media/animation_strip.png` | 6 frames from the turntable |
+| `media/hair_shading_sweep.mp4` | **hair shading sweep**: a full 360° sun orbit around the bust, 40 frames at 14 fps, so the two specular lobes, the scatter and the backlit transmission can be followed across the mass (see below) |
+| `media/hair_shading_sweep.gif` | the same clip as a looping GIF |
+| `media/hair_shading_sweep.jpg` | four frames of it as a filmstrip |
 
 ## Layout
 
@@ -541,7 +548,8 @@ shaders/        GLSL 450 sources + lib/common.glsl, lib/shadow.glsl,
                 lib/sky.glsl (clouds + rain veil)  ->  src/shaders_generated.hpp
                 (edit a shader, then `ninja -C build shaders && ninja -C build`;
                  the `shaders-check` target fails the build on a stale header)
-tools/          export_assets.js, compile_shaders.py, capture.py, make_icons.py
+tools/          export_assets.js, compile_shaders.py, capture.py, make_icons.py,
+                softvulkan.sh (CPU Vulkan for headless/CI rendering)
 tests/          unit + integration tests (meson)
 assets/         hairgen_assets.bin, fonts/{Roboto-Regular,Roboto-Medium,
                 MaterialDesignIcons-Subset}.ttf, web/{studio,index}.html,
@@ -616,3 +624,50 @@ sky LUT bake (256×128) ──┘        │  sky · ground · head · hair
   alpha-blended, 4× MSAA pass corrupted whole tiles on lavapipe. The rain pass
   therefore writes alpha 0 instead of discarding, which is a no-op under the
   blend function it uses.
+
+### The hair shading sweep
+
+```sh
+tools/softvulkan.sh --prefix /tmp/softvk && eval "$(tools/softvulkan.sh --prefix /tmp/softvk --env)"
+./build/hairgen --sequence frames --frames 40 --fps 14 --anim light \
+    --size 288 --samples 4 --ssaa 2 --shadow-res 2048 \
+    --hair-count 18000 --segments 24 --width-px 2.0 \
+    --dye honey --dye-strength 0.7 \
+    --sun-rot 1.6 --sun-tilt -0.45 --rot 2.9 --dist 2.6
+```
+
+`--anim light` walks the sun once around the head at 9° per frame. What to look
+at, in order: the tight **light-coloured** lobe and the broad **fibre-tinted**
+lobe splitting as the sun crosses the strands (UE's two-lobe Hair model, see
+above); the mass *brightening* rather than going black when the sun is behind
+it (the dual-scattering/Scatter term); the glow at the silhouette (Backlit);
+and the contact shadow of the whole mass on the checkerboard.
+
+| | | | |
+|---|---|---|---|
+| ![f0](media/stills/hair_sweep_0.png) | ![f10](media/stills/hair_sweep_1.png) | ![f20](media/stills/hair_sweep_2.png) | ![f30](media/stills/hair_sweep_3.png) |
+
+## Rendering on a machine with no GPU
+
+`tools/softvulkan.sh` assembles a CPU Vulkan stack, so the renderer runs on a
+build box or in CI exactly as it does on a GPU:
+
+```sh
+tools/softvulkan.sh --prefix /tmp/softvk          # once, ~1 min
+eval "$(tools/softvulkan.sh --prefix /tmp/softvk --env)"
+./build/hairgen --list-devices
+#   - llvmpipe (LLVM 23.1.3, 256 bits) (cpu, api 1.4.354, software)
+./build/hairgen --out render.png --size 320 --samples 4 --ssaa 2
+```
+
+Two pieces are needed and neither is usually installed: the Khronos **loader**
+(portable C, built here from source with CMake) and a **software ICD** - Mesa's
+**lavapipe** by default, SwiftShader with `--icd swiftshader`. Both are pulled
+from npm packages that ship them (`@drawcall/webgl-linux-x64` and
+`@onirenaud/swiftshader-vulkan`), which is what makes this work in a container
+with no distro packages available.
+
+The delivered turntable/sweep media is rendered this way. On 2 vCPUs (llvmpipe,
+18k strands x 24 segments, 4x MSAA + 2x SSAA) a 288^2 frame takes ~13 s and a
+384^2 frame ~25 s - slow, but it is the real pipeline rather than a mock, and it
+means the render path is testable without a GPU at all.
