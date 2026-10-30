@@ -47,8 +47,9 @@ struct FrameUbo {
   float ground0[4];  // checker amount, scale, fade distance, unused
   float ground1[4];  // checker light square (rgb), unused
   float ground2[4];  // checker dark square (rgb), unused
+  float ueHair[4];   // Unreal Hair model: scatter, specular, backlit, stylise
 };
-static_assert(sizeof(FrameUbo) == (16 * 5 + 4 * 24) * 4, "unexpected UBO packing");
+static_assert(sizeof(FrameUbo) == (16 * 5 + 4 * 25) * 4, "unexpected UBO packing");
 
 void copy_mat(float* dst, const mat4& m) { std::memcpy(dst, m.m, sizeof(float) * 16); }
 
@@ -1283,6 +1284,10 @@ void Renderer::update_frame_ubo(double time, uint32_t frame_index) {
   u.ground1[3] = 0.0f;
   u.ground2[0] = sk.checker_a[0]; u.ground2[1] = sk.checker_a[1]; u.ground2[2] = sk.checker_a[2];
   u.ground2[3] = 0.0f;
+  u.ueHair[0] = scene_.hair.scatter;
+  u.ueHair[1] = scene_.hair.specular;
+  u.ueHair[2] = scene_.hair.backlit;
+  u.ueHair[3] = scene_.hair.stylise;
 
   std::memcpy(ubo_.mapped, &u, sizeof(u));
 }

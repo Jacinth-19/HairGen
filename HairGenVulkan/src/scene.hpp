@@ -92,6 +92,33 @@ struct HairSettings {
   float color_variation = 0.22f; // per-strand tint jitter (mravella/hair)
   float sheen = 0.35f;           // extra sky-facing sheen / polish
   float fill_light = 0.22f;      // cool fill from the shadow side (mravella/hair)
+
+  // ---- Unreal's Hair shading model -------------------------------------
+  // UE documents the Hair model as "simulating multiple specular highlights:
+  // one representing the color of light, and another representing a mix of hair
+  // and light color", with the inputs Base Color, Scatter, Specular, Roughness,
+  // Tangent and Backlit. Base Colour and Tangent map onto `a_f`/`dye` and the
+  // strand tangent; these are the remaining controls, in UE's vocabulary and
+  // with UE's artistic ranges (Scatter 0.5-0.8, Specular ~0.5, Backlit 0-0.1,
+  // Roughness 0.3-0.5).
+  float scatter = 0.65f;   // dual-scattering / GI weight
+  float specular = 0.55f;  // scale of the light-coloured highlight lobe
+  float backlit = 0.06f;   // transmission through strands lit from behind
+  // The demo's extra lift/rim/sheen/saturation nudges have no counterpart in
+  // UE's model - they exist for its punchier web look. 1 keeps them all, 0 is
+  // the straight physical result.
+  float stylise = 0.45f;
+
+  // UE's Roughness drives the longitudinal roughness of the three fibre paths.
+  // One control, three deviations - the mapping is monotone and hits the
+  // defaults at roughness 0.4 (r 8 / tt 10 / trt 15 degrees).
+  void set_roughness(float r) {
+    r = r < 0.0f ? 0.0f : (r > 1.0f ? 1.0f : r);
+    r_dev = 3.0f + 12.5f * r;    // 3 .. 15.5 deg
+    tt_dev = 4.0f + 15.0f * r;   // 4 .. 19
+    trt_dev = 8.0f + 17.5f * r;  // 8 .. 25.5
+  }
+  float roughness() const { return std::min(1.0f, std::max(0.0f, (r_dev - 3.0f) / 12.5f)); }
 };
 
 // ---- hair dye colour parsing -------------------------------------------
@@ -316,7 +343,12 @@ struct RenderOptions {
   int height = 768;
   int shadow_res = 1024;
   int samples = 4;   // MSAA
-  int supersample = 1;  // render at N x resolution and box-filter down (still frames)
+  // Render at N x resolution and box-filter down. 2 by default: the hair is
+  // made of sub-pixel ribbons, and alpha-to-coverage can only hand out k/4 of a
+  // pixel, so a single-sampled frame shows the strand coverage as a stipple.
+  // Supersampling averages that away (it is the classic 4x4 rotate/dither
+  // pattern in reverse), and this is an offline renderer - quality first.
+  int supersample = 2;
   std::string output_png;
   int frames = 1;
   std::string sequence_dir;

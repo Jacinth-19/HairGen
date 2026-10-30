@@ -183,6 +183,57 @@ folds in a prefiltered quarter of the original for micro-detail.
 back-lit) and a Marschner-consistent sky ambient term. The head uses the demo's
 skin albedo with wrapped diffuse, GGX specular and hair-shadow transmittance.
 
+**Unreal's Hair shading model, ported.** Unreal documents its **Hair** shading
+model as *"simulating multiple specular highlights: one representing the color
+of light, and another representing a mix of hair and light color"*, with the
+inputs **Base Color, Scatter, Specular, Roughness, Tangent, Backlit** (plus
+emissive, AO, world/pixel offset, which do not apply here):
+
+| UE Hair input | here | notes |
+|---|---|---|
+| Base Color | `--dye` / the fibre LUTs | UE tints the same Marschner lobes; we tint the scattered radiance (see *Hair dye*) |
+| Tangent | the per-strand ribbon tangent | hair is shaded *around the tangent*, never around a normal |
+| Scatter | `--scatter` (0.65) | weight of the dual-scattering / GI term; UE's artistic range is 0.5–0.8 |
+| Specular | `--specular` (0.55) | scale of the **light-coloured** highlight lobe; the fibre-tinted lobe is separate, which is exactly the two-lobe description above |
+| Roughness | `--roughness` (0.40) | one control mapped monotonically onto the R / TT / TRT longitudinal deviations (0.4 reproduces the demo's material); UE suggests 0.3–0.5, and widening the lobe instead of dimming it is what stops hair reading as plastic |
+| Backlit | `--backlit` (0.06) | transmission through strands lit from behind, weighted by how edge-on the fibre is to the light |
+
+Base Colour and Tangent already existed, so a groom material now ports over as
+four numbers plus the dye. **`--stylise`** (0.45) is the one control UE has no
+equivalent for: the demo's extra radiance lift, rim, sheen and the 1.30×
+saturation boost are "makeup" that a physical model does not have, so they are
+scaled by it - 0 gives the plain physical result, 1 the original web look.
+
+Where Unreal's *groom pipeline* goes further, and what this renderer does
+instead - stated rather than glossed over:
+
+* UE **voxelizes** the groom into a density volume and computes shadow and
+  transmittance by ray-marching that volume, with **Deep Shadow** lights using a
+  four-layer deep opacity map (per CVar `r.HairStrands.DeepShadow.*`). We have no
+  groom to voxelize: the strands are generated on the GPU from the demo's
+  hair-mesh volume, so there is no CPU-side curve data to build a density volume
+  from. Transmittance therefore stays the demo's Beer–Lambert model over a hair
+  depth map, filtered with a 3×3 tent - a single-layer deep opacity map.
+* UE composites hair *samples* and can supersample groom visibility to 8 samples
+  per pixel. This renderer now defaults to **8× MSAA plus 2× supersampling**
+  (`--samples`, `--ssaa`) and derives alpha from the strand's projected width,
+  which is the same idea with fewer moving parts.
+
+**That dithering on the hair edge.** It was two separate things, and both are
+gone:
+
+* the tonemapper's dither used a `fract(sin(dot(...)))` hash, which decorrelates
+  every pixel from its neighbours - i.e. static grain, most visible on smooth
+  gradients and on the silhouette. It is now **interleaved gradient noise**
+  (Jimenez 2014, the sequence Unreal uses for temporally stable dithering),
+  still triangular and still exactly ±0.5 LSB;
+* the silhouette itself stippled because every sub-pixel ribbon fragment asked
+  for **full** alpha-to-coverage, and the hardware can only grant k/4 of a
+  pixel at 4× MSAA. Alpha is now the *fraction of the pixel the strand covers*,
+  computed from the ribbon's projected width in pixels, faded to zero over the
+  last 1.5 % of the strand instead of ending on a full-alpha quad. A 0.4-pixel
+  strand is now 40 % transparent instead of a coin flip.
+
 **Lighting & shadows.** Two 1 k² shadow maps per frame (object depth + hair
 depth for the transmittance model), image-based ambient from the sky table, sun
 disc, and an infinite ground plane that catches the ground shadow.
@@ -303,6 +354,8 @@ External references mined for techniques (nothing is copied verbatim):
 | source | taken |
 |---|---|
 | SIGGRAPH'24 hair-mesh paper | procedural styling operators over one guide mesh (the `--style` presets), texture-space strand layout, LOD thinking |
+| Unreal Engine docs, *Shading Models → Hair* | the Hair shading model's stated behaviour ("multiple specular highlights: one representing the color of light, and another representing a mix of hair and light color"), its input set (Base Color, Scatter, Specular, Roughness, Tangent, Backlit) and the artistic ranges behind the defaults |
+| Unreal Engine docs, *Groom Scalability and Performance* | the groom pipeline the shadow model is derived from: voxelization into a density volume, ray-marched transmittance, four-layer Deep Shadow / deep opacity maps, up to 8 samples per pixel for groom visibility |
 | `github.com/mravella/hair` | `diffuse = sqrt(1-|T·L|)`, `spec = pow(sqrt(1-|T·H|), shininess)`, per-strand `colorVariation`, root→tip `MIN_COLOR` gradient, the cool `FILL_LIGHT` that lifts the shadow side, billboarded ribbon strips, PCF/opacity-mapped hair shadows (reimplemented as the transmittance model) |
 
 `root.rot` is exported but unused: in the demo it only feeds the (disabled)
@@ -332,6 +385,13 @@ hairgen --out render.png [options]
   --dye-strength F                     0 = original fibre colour, 1 = fully dyed
   --root-darken F --color-var F        root shadow / per-strand colour jitter
   --fill F --sheen F                   fill light / anisotropic sheen (0..1)
+  --scatter F --specular F             Unreal Hair model: dual-scattering weight
+                                       (0.5-0.8, default 0.65) / highlight scale
+  --roughness F --backlit F            Unreal Hair model: fibre roughness (0.3-0.5,
+                                       default 0.40) / transmission (0-0.1)
+  --stylise F                          0 = plain physical, 1 = the demo's extra
+                                       lift / rim / sheen / saturation (default .45)
+  --samples N --ssaa N                 MSAA (default 4) and supersampling (default 2)
   --clump F --clump-size F --curl F --curl-twists F --frizz F --kink F --fuzz F
   --density F --length-var F --hair-count N --segments N --width-px F
   --rot R --tilt R --dist D --fov F
@@ -459,6 +519,7 @@ meson test -C build          # add VK_ICD_FILENAMES=... to include the render te
 | `media/hero_1536.png` | 1536² hero render |
 | `media/contact_sheet.jpg` | 12-up overview (hero + dye palette + hairstyles) |
 | `media/dye_sheet.jpg` | the full dye palette on one sheet |
+| `media/model_sheet.jpg` | Unreal's Hair shading model at the ends of each documented input (roughness, specular, scatter, backlit, physical vs stylised) |
 | `media/aa_off.png`, `media/aa_on.png` | 1× vs 4× MSAA |
 | `media/weather_sheet.jpg` | dry / drizzle / rain / storm / sunset / noon / puddles / close-up |
 | `media/rain.gif`, `media/rain.webp`, `media/rain.avi` | the rain system in motion |

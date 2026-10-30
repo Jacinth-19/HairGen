@@ -73,9 +73,10 @@ void main() {
   // point of the multiple-scattering shadow model), but a real head of hair is
   // never black on top: light keeps bouncing between the fibres. Lift the
   // deeply shadowed part towards the fibre's own tint.
-  color += frame.fiber.rgb * 0.16;
+  float stylise = clamp(frame.ueHair.w, 0.0, 1.0);
+  color += frame.fiber.rgb * 0.16 * stylise;
 
-  // ---- dye -------------------------------------------------------------
+  // ---- dye colour (root -> tip) ----------------------------------------
   // Unit-luma hue of the target colour: multiplying by it recolours the fibre
   // without touching how bright each scattering lobe is.
   // Absorption semantics: a dye can only *subtract* light, so normalise by the
@@ -90,23 +91,34 @@ void main() {
   // Dark dyes must also *darken*: without this every colour would come out at
   // the fibre's own brightness, which turned auburn and burgundy into neon.
   float dyeDark = clamp(pow(max(dyeMax, 0.02), 0.80), 0.18, 1.10);
+  // The fibre's own colour where the dye has not fully taken over; the second
+  // (broad) highlight lobe and the backlit term are tinted by it.
+  vec3 tintFibre = isDyed ? mix(frame.fiber.rgb, dyeHue * 0.85 * dyeDark, frame.dye.w) : frame.fiber.rgb;
 
   // ---- 2. Kajiya-Kay sheen (mravella/hair) -----------------------------
   // diffuse = sqrt(1-|T.L|), specular = pow(sqrt(1-|T.H|), shininess). Cheap,
   // and it supplies the tight bright band the lookup tables smear out.
   vec3 Lv = normalize(frame.lightDirView.xyz);
+  vec3 sunC = vec3(1.0, 0.965, 0.93) * frame.skyRef.x * 1.35;
   lit = clamp(lit, 0.0, 1.0);
+  float specAmt = clamp(frame.ueHair.y, 0.0, 2.0);
   {
     float TdL = dot(t, Lv);
     float TdH = dot(t, normalize(Lv + v));
     float kkDiff = sqrt(max(0.0, 1.0 - TdL * TdL));
-    float kkSpec = pow(sqrt(max(0.0, 1.0 - TdH * TdH)), HAIR_SHININESS);
-    vec3 sunC = vec3(1.0, 0.965, 0.93) * frame.skyRef.x * 1.35;
-    // The wrap term is tinted by the dye; the highlight stays white.
-    color += (mix(vec3(1.0), dyeHue * dyeDark, 0.85) * 0.28 * kkDiff + vec3(1.0) * kkSpec * 0.50) * sunC * lit;
+    // Unreal's Hair shading model is documented as simulating "multiple
+    // specular highlights: one representing the color of light, and another
+    // representing a mix of hair and light color". Two lobes then: a tight one
+    // in the light's colour, and a broad one tinted by the fibre.
+    float sinTH = sqrt(max(0.0, 1.0 - TdH * TdH));
+    float tight = pow(sinTH, HAIR_SHININESS);
+    float broad = pow(sinTH, HAIR_SHININESS * 0.22);
+    vec3 kkSpec = (vec3(1.0) * tight * 0.50 + tintFibre * broad * 0.18) * specAmt;
+    // The wrap term is tinted by the dye.
+    color += (mix(vec3(1.0), dyeHue * dyeDark, 0.85) * 0.28 * kkDiff + kkSpec) * sunC * lit;
   }
 
-  // ---- 3. dye ----------------------------------------------------------
+  // ---- 3. dye applied --------------------------------------------------
   // Keep the fibre's luminance, redistribute it into the dye's hue.
   vec3 dyed = vec3(luma(color)) * dyeHue * dyeDark;
   // Dark dyes are also less saturated: at these radiances a unit-luma hue turns
@@ -117,6 +129,17 @@ void main() {
   float hl = smoothstep(1.1, 3.4, luma(color));
   dyed = mix(dyed, vec3(luma(color)) * mix(vec3(1.0), dyeChroma, 0.25), hl * 0.55);
   color = mix(color, dyed, frame.dye.w);
+
+  // ---- Backlit (Unreal's Hair model) ------------------------------------
+  // Light arriving from behind the strand is transmitted through it; that is
+  // the input UE exposes as Backlit. Seen end-on a fibre blocks most of it, so
+  // the term is weighted by how perpendicular the strand is to the light.
+  float backlitAmt = clamp(frame.ueHair.z, 0.0, 1.0);
+  if (backlitAmt > 0.001) {
+    float behind = pow(clamp(dot(-v, Lv), 0.0, 1.0), 3.0);
+    float edgeOn = sqrt(max(0.0, 1.0 - dot(t, Lv) * dot(t, Lv)));
+    color += tintFibre * sunC * behind * edgeOn * backlitAmt * 0.55 * lit;
+  }
 
   // ---- 4. strand identity ---------------------------------------------
   float rv = Rand(vInstance * 7 + 11, 5) * 2.0 - 1.0;
@@ -132,7 +155,7 @@ void main() {
 
   // ---- 5. sky ambient --------------------------------------------------
   vec3 nApprox = normalize(cross(t, v));
-  vec3 tint = isDyed ? mix(frame.fiber.rgb, dyeHue * 0.85 * dyeDark, frame.dye.w) : frame.fiber.rgb;
+  vec3 tint = tintFibre;  // fibre colour, or the dye where it has taken over
   float occlusion = mix(0.22, 1.0, smoothstep(0.0, 0.85, vW));
   vec3 sky = skyAmbient(nApprox, 0.4);
   color += sky * tint * frame.fiber2.w * occlusion;
@@ -157,13 +180,13 @@ void main() {
   float sheenAmt = clamp(frame.dye2.z, 0.0, 1.5);
   if (sheenAmt > 0.001) {
     float sheenTerm = pow(1.0 - clamp(abs(dot(t, v)), 0.0, 1.0), 2.2);
-    color += (sky * 1.15 + vec3(0.05)) * tint * sheenAmt * sheenTerm * 0.42 *
+    color += (sky * 1.15 + vec3(0.05)) * tint * sheenAmt * stylise * sheenTerm * 0.42 *
              smoothstep(0.10, 0.85, vW);
   }
 
   // Grazing strands catch the sky: this is what separates the silhouette.
   float rim = pow(1.0 - clamp(abs(dot(nApprox, v)), 0.0, 1.0), 3.0);
-  color += (sky * 1.10 + vec3(0.16)) * tint * rim * 0.55 * smoothstep(0.15, 1.0, vW);
+  color += (sky * 1.10 + vec3(0.16)) * tint * rim * 0.55 * stylise * smoothstep(0.15, 1.0, vW);
 
   // ---- 6. rain ---------------------------------------------------------
   // Wet hair darkens strongly (the water fills the gaps between cuticle scales
@@ -185,7 +208,15 @@ void main() {
   float l = luma(color);
   color = color / (1.0 + 0.22 * max(l, 0.0));
   // Push saturation back after the dye + ambient mixing, which desaturate.
-  color = mix(vec3(luma(color)), color, 1.30);
-  // Alpha drives MSAA coverage (alpha-to-coverage), giving soft tips and edges.
-  outColor = vec4(max(color, vec3(0.0)), clamp(vAlpha, 0.02, 1.0));
+  color = mix(vec3(luma(color)), color, 1.0 + 0.30 * stylise);
+  // ---- coverage ---------------------------------------------------------
+  // Alpha drives MSAA coverage. It is the *fraction of the pixel the strand
+  // covers* (from its projected width, see hair.vert), faded out over the last
+  // 1.5 % of the strand, so a tip disappears instead of ending on a full-alpha
+  // quad. The old hard floor of 0.02 meant a strand that had already ended kept
+  // claiming a quarter of the pixel, which is what made the silhouette speckle.
+  float tipFade = smoothstep(1.0, 0.985, vW / max(vWMax, 1e-4));
+  float alpha = clamp(vAlpha, 0.0, 1.0) * tipFade;
+  if (alpha <= 0.003) discard;
+  outColor = vec4(max(color, vec3(0.0)), alpha);
 }

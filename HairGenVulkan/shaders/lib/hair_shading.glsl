@@ -91,7 +91,9 @@ vec3 ShadeHair(vec3 pLight, vec3 tangent, vec3 w_o, int instanceID, out float di
   float thetaTRT = theta_h - TRT_SHIFT;
   float MTRT = exp(-0.5 * thetaTRT * thetaTRT / (TRT_DEV * TRT_DEV)) / (sqrt(2.0 * PI) * TRT_DEV);
 
-  vec3 color = MR * NR + MTT * NTT + MTRT * NTRT;
+  // Specular (UE's Hair model input) scales the R lobe - the highlight that
+  // carries the *light's* colour, as opposed to the fibre-tinted TT/TRT lobes.
+  vec3 color = MR * NR * clamp(frame.ueHair.y, 0.0, 2.0) + MTT * NTT + MTRT * NTRT;
 
   // local scattering
   vec3 gi = vec3(0.0);
@@ -100,6 +102,11 @@ vec3 ShadeHair(vec3 pLight, vec3 tangent, vec3 w_o, int instanceID, out float di
   gi.g = density * texture(GI, vec3(ix_spread.g, ix_theta_h, ix_theta)).g;
   gi.b = density * texture(GI, vec3(ix_spread.b, ix_theta_h, ix_theta)).b;
 
+  // Scatter (UE's Hair model input) scales the dual-scattering component: the
+  // light that entered the fibre cloud, bounced and left it again. 0.65 - UE's
+  // default artistic value - is unity here, 1.0 lifts it by 35 %.
+  const float kScatterScale = mix(0.35, 1.35, clamp(frame.ueHair.x, 0.0, 1.0));
+  gi *= kScatterScale;
   color += gi;
   color *= directFraction;
 
@@ -116,7 +123,8 @@ vec3 ShadeHair(vec3 pLight, vec3 tangent, vec3 w_o, int instanceID, out float di
   vec3 mtt_gi = vec3(MGIr.y, MGIg.y, MGIb.y);
   vec3 mtrt_gi = vec3(MGIr.z, MGIg.z, MGIb.z);
 
-  vec3 f_indir = trans * density * (gi + mr_gi * nr_gi + mtt_gi * ntt_gi + mtrt_gi * ntrt_gi);
+  vec3 f_indir = trans * density * kScatterScale *
+                 (gi + mr_gi * nr_gi + mtt_gi * ntt_gi + mtrt_gi * ntrt_gi);
   color += f_indir;
 
   color += gi * 0.1;

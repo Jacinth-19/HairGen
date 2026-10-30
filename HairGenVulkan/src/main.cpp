@@ -30,16 +30,16 @@ void usage() {
       "  --size N              square render resolution (default 768)\n"
       "  --width N --height N  explicit resolution\n"
       "  --samples N           MSAA sample count: 1, 2, 4, 8 (default 4)\n"
-      "  --ssaa N              supersample N x N and box-filter down (default 1)\n"
+      "  --ssaa N              supersample N x N and box-filter down (default 2)\n"
       "  --frames N            render N frames (default 1)\n"
       "  --sequence DIR        write DIR/frame_%%04d.png for every frame\n"
       "  --anim NAME           none | orbit | sweep | light (default none)\n"
       "  --fps N               animation frames per second (default 30)\n"
       "\n"
       "Hair\n"
-      "  --hair-count N        strands (default 10000)\n"
+      "  --hair-count N        strands (default 34000)\n"
       "  --segments N          segments per strand (default 32)\n"
-      "  --width-px F          ribbon width in pixels (default 1.6)\n"
+      "  --width-px F          ribbon width in pixels (default 3.2)\n"
 
       "  --clump F --clump-size F --clump-var F --clump-noise F\n"
       "  --curl F --curl-twists F --curl-freq F\n"
@@ -54,14 +54,23 @@ void usage() {
       "                        black|violet|teal|silver|burgundy|sunset)\n"
       "  --dye-strength F      0 = original fibre colour, 1 = fully dyed (default 0.88)\n"
       "  --dye-tip HEX|NAME    ombre tip colour (implies --dye-gradient 0.75)\n"
-      "  --dye-gradient F      0 flat, 0.75 ombre, 1.5 dip dye (default 0)\n"
+      "  --dye-gradient F      0 flat, 0.75 ombre, 1.0 balayage, 1.6 dip dye (default 0)\n"
       "  --cut-length F        hair length along the guide mesh (0.15..1, default 1)\n"
       "  --volume F            lift the mass off the skull (0..1, default 0)\n"
       "  --fill F --sheen F    fill light / anisotropic sheen (0..1)\n"
+      "\n"
+      "Unreal Hair shading model (Base Colour and Tangent are --dye and the strand\n"
+      "tangent, so a UE groom material maps onto these four numbers)\n"
+      "  --scatter F           dual-scattering weight (UE range 0.5-0.8, default 0.65)\n"
+      "  --specular F          light-coloured highlight scale (UE ~0.5, default 0.55)\n"
+      "  --roughness F         fibre roughness (UE 0.3-0.5, default 0.40)\n"
+      "  --backlit F           transmission from behind the strands (0-0.1, default 0.06)\n"
+      "  --stylise F           0 = plain physical result, 1 = the demo's extra lift /\n"
+      "                        rim / sheen / saturation (default 0.45)\n"
       "  --list-styles         print the hairstyle catalogue\n"
       "  --list-dyes           print the dye palette\n"
-      "  --root-darken F       how much darker the roots are (default 0.45)\n"
-      "  --color-var F         per-strand tint jitter (default 0.16)\n"
+      "  --root-darken F       root->tip ramp depth (1 = mravella MIN_COLOR, default 1)\n"
+      "  --color-var F         per-strand tint jitter (default 0.22)\n"
       "  --r-dev D --tt-dev D --trt-dev D  fibre lobe widths (degrees)\n"
       "  --ambient F           hair ambient/skylight strength\n"
       "  --lines               render mode 0: strand centre lines (demo default)\n"
@@ -316,6 +325,13 @@ int main(int argc, char** argv) {
       if (scene.hair.dye_gradient <= 0.001f) scene.hair.dye_gradient = 0.75f;
     }
     else if (match(a, "--dye-gradient")) scene.hair.dye_gradient = float(std::atof(next(a).c_str()));
+    // Unreal's Hair shading model inputs (see scene.hpp): Base Colour and
+    // Tangent are --dye and the strand tangent.
+    else if (match(a, "--scatter")) scene.hair.scatter = float(std::atof(next(a).c_str()));
+    else if (match(a, "--specular")) scene.hair.specular = float(std::atof(next(a).c_str()));
+    else if (match(a, "--backlit")) scene.hair.backlit = float(std::atof(next(a).c_str()));
+    else if (match(a, "--stylise") || match(a, "--stylize")) scene.hair.stylise = float(std::atof(next(a).c_str()));
+    else if (match(a, "--roughness")) scene.hair.set_roughness(float(std::atof(next(a).c_str())));
     else if (match(a, "--fill")) scene.hair.fill_light = float(std::atof(next(a).c_str()));
     else if (match(a, "--sheen")) scene.hair.sheen = float(std::atof(next(a).c_str()));
     else if (match(a, "--checker")) scene.sky.checker = float(std::atof(next(a).c_str()));

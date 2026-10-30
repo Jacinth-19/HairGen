@@ -75,6 +75,19 @@ LOOKS = [
     ('overcast', ['--clouds', '0.85', '--turbidity', '4.5', '--sun-intensity', '0.7']),
 ]
 
+# Unreal's Hair shading model, as mapped here (see README): the same scene at
+# the ends of each documented input, so the sheet shows what each control does.
+# UE's own ranges: Scatter 0.5-0.8, Specular ~0.5, Roughness 0.3-0.5,
+# Backlit 0-0.1.
+MODEL = [
+    ('ue_default', ['--roughness', '0.40']),
+    ('ue_rough', ['--roughness', '0.50']),
+    ('ue_glossy', ['--roughness', '0.25', '--specular', '0.85']),
+    ('ue_physical', ['--roughness', '0.55', '--specular', '0.25', '--stylise', '0.0']),
+    ('ue_backlit', ['--backlit', '0.30', '--sun-rot', '5.35', '--sun-tilt', '-0.10']),
+    ('ue_scatter', ['--scatter', '0.85']),
+]
+
 # ---------------------------------------------------------------- helpers
 
 
@@ -90,9 +103,10 @@ def have(tool):
     return shutil.which(tool) is not None
 
 
-# Quality knobs shared by every still: 4x MSAA plus a 2x supersample, and a
-# 2048^2 shadow map (the hair shadow lands on the face, so resolution shows).
-QUALITY = ['--samples', '4', '--ssaa', '2', '--shadow-res', '2048']
+# Quality knobs shared by every still: 8x MSAA (the sample count Unreal uses for
+# groom primary visibility) plus a 2x supersample, and a 2048^2 shadow map (the
+# hair shadow lands on the face, so resolution shows).
+QUALITY = ['--samples', '8', '--ssaa', '2', '--shadow-res', '2048']
 
 
 def render(binary, out, size, extra):
@@ -278,6 +292,13 @@ def main():
             render(binary, p, size, extra)
             stills.append((p, 'look: ' + name))
 
+        # Unreal's Hair shading model, one still per documented input.
+        for name, extra in MODEL:
+            p = os.path.join(out, 'stills', 'model_%s.png' % name)
+            print('[capture] model', name)
+            render(binary, p, size, extra)
+            stills.append((p, 'model: ' + name))
+
         # Weather / liquid effects.
         for name, extra in WEATHER:
             p = os.path.join(out, 'stills', 'weather_%s.png' % name)
@@ -335,6 +356,17 @@ def main():
             montage(dye_paths, list(STYLES.keys()), tmp, tile='4x')
             run(['convert', tmp, '-resize', '1600x', '-quality', '92', '-strip',
                  os.path.join(out, 'dye_sheet.jpg')])
+            os.remove(tmp)
+
+        # Hair shading-model sheet.
+        md_paths = [os.path.join(out, 'stills', 'model_%s.png' % n) for n, _ in MODEL]
+        md_paths = [p for p in md_paths if os.path.exists(p)]
+        if have('montage') and md_paths:
+            print('[capture] model sheet')
+            tmp = os.path.join(out, 'model_sheet.png')
+            montage(md_paths, [n for n, _ in MODEL], tmp, tile='3x')
+            run(['convert', tmp, '-resize', '1600x', '-quality', '92', '-strip',
+                 os.path.join(out, 'model_sheet.jpg')])
             os.remove(tmp)
 
         # Weather sheet (rain, puddles, lens droplets).

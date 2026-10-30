@@ -99,9 +99,20 @@ void main() {
 
   mapped = linearToSRGB(clamp(mapped, 0.0, 1.0));
 
-  // Triangular noise instead of uniform: it removes the 8-bit banding in the sky
-  // gradient with half the amplitude, so it costs less perceived grain.
-  vec2 px = vUV * frame.resolution.xy + pc.p.w;
-  float dither = (hash(px) + hash(px + 17.31) - 1.0) / 255.0;
+  // Dither. Two things matter here:
+  //
+  //  * the *pattern*. A hash built from fract(sin(dot(...))) decorrelates every
+  //    pixel from its neighbours, which is exactly what static grain looks like
+  //    on a smooth gradient - and on a hair silhouette it reads as the edge
+  //    "shimmering". Interleaved gradient noise (Jimenez 2014, the same sequence
+  //    Unreal uses for its temporally stable dithering) is a 3x3-diagonal ramp:
+  //    it still breaks up banding, but the error is spatially coherent, so it
+  //    reads as texture rather than noise.
+  //  * the *amplitude*. One 8-bit step, triangular, i.e. +-0.5 LSB: enough to
+  //    break an 8-bit quantisation boundary, invisible otherwise.
+  vec2 px = floor(vUV * frame.resolution.xy + pc.p.w);
+  float ign = fract(52.9829189 * fract(0.06711056 * px.x + 0.00583715 * px.y));
+  float ign2 = fract(52.9829189 * fract(0.06711056 * (px.x + 1.0) + 0.00583715 * (px.y + 7.0)));
+  float dither = (ign + ign2 - 1.0) / 255.0;
   outColor = vec4(mapped + dither, 1.0);
 }

@@ -279,6 +279,12 @@ void apply_params(Scene& s, const std::string& body) {
   if (json_number(body, "volume", f)) s.hair.volume = f;
   if (json_number(body, "fillLight", f)) s.hair.fill_light = f;
   if (json_number(body, "sheen", f)) s.hair.sheen = f;
+  // Unreal Hair model inputs, same names the panel and the CLI use.
+  if (json_number(body, "scatter", f)) s.hair.scatter = f;
+  if (json_number(body, "specular", f)) s.hair.specular = f;
+  if (json_number(body, "backlit", f)) s.hair.backlit = f;
+  if (json_number(body, "stylise", f)) s.hair.stylise = f;
+  if (json_number(body, "roughness", f)) s.hair.set_roughness(f);
   if (json_number(body, "checker", f)) s.sky.checker = f;
   if (json_number(body, "checkerScale", f)) s.sky.checker_scale = f;
   if (json_number(body, "checkerFade", f)) s.sky.checker_fade = f;

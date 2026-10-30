@@ -327,13 +327,25 @@ void main() {
   // random width so the mass does not read as one solid sheet.
   float taper = mix(1.0, 0.18, smoothstep(0.55, 1.0, along));
   float widthJitter = mix(0.65, 1.25, Rand(gl_InstanceIndex, 6));
-  glpos.xy += b * inTexW.z * glpos.w * taper * widthJitter;
+  const float halfW = inTexW.z * taper * widthJitter;   // in NDC units
+  glpos.xy += b * halfW * glpos.w;
+
+  // ---- coverage -------------------------------------------------------
+  // The ribbon's width in *pixels*: halfW is an NDC half-width, and a unit of
+  // NDC is resolution/2 pixels along that axis, so the full width is
+  // halfW * (|b.x|*W + |b.y|*H). At the default 3.2 px this is ~3.2; a strand
+  // thinner than a pixel is then *semi-transparent* instead of claiming a whole
+  // sample. That is the difference between a smooth silhouette and the speckle
+  // alpha-to-coverage produces when every sub-pixel strand asks for full
+  // coverage and the hardware can only grant k/4 of it.
+  float widthPx = halfW * (abs(b.x) * frame.resolution.x + abs(b.y) * frame.resolution.y);
+  float pxCoverage = clamp(widthPx, 0.0, 1.0);
 
   // Alpha-to-coverage: a strand covers fewer MSAA samples where it is thin and
   // near its cut. This is what gives the silhouette soft, hair-like edges
   // instead of a polygon boundary, and it needs no sorting.
   float strandVar = mix(0.55, 1.0, Rand(gl_InstanceIndex, 7));
-  vAlpha = strandVar * mix(1.0, 0.25, smoothstep(0.80, 1.0, along)) * mix(0.55, 1.0, taper);
+  vAlpha = strandVar * pxCoverage * mix(1.0, 0.25, smoothstep(0.80, 1.0, along)) * mix(0.55, 1.0, taper);
 
   gl_Position = glpos;
   vViewPos = mv * vec4(p, 1.0);

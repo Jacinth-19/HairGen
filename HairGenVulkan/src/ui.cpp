@@ -756,6 +756,36 @@ void UiPanel::draw_hair_window(Scene& scene, UiResult& result) {
   result.changed |= slider("Sheen", &h.sheen, 0.0f, 1.0f, "%.2f",
                            "Anisotropic sheen: 0 = matte, 1 = freshly washed.", 0.35f);
 
+  // ---- Unreal's Hair shading model, in Unreal's own vocabulary ----------
+  section(ICON_CUBE_OUTLINE, "Hair model (UE)");
+  result.changed |= slider("Scatter", &h.scatter, 0.0f, 1.0f, "%.2f",
+                           "Unreal's Hair model \"Scatter\" input: how much of the light that enters the fibre\n"
+                           "cloud scatters back out (dual scattering). UE's artistic range is 0.5-0.8;\n"
+                           "0.65 is unity here.", 0.65f);
+  result.changed |= slider("Specular", &h.specular, 0.0f, 1.5f, "%.2f",
+                           "Unreal's \"Specular\" input: scale of the light-coloured highlight lobe.\n"
+                           "UE artists usually keep this near 0.5.", 0.55f);
+  float rough = h.roughness();
+  if (slider("Roughness", &rough, 0.0f, 1.0f, "%.2f",
+             "Unreal's \"Roughness\" input, remapped onto the longitudinal roughness of the\n"
+             "R / TT / TRT fibre paths (0.4 reproduces the demo's material). UE suggests 0.3-0.5.\n"
+             "Higher rougness widens the highlight instead of dimming it, which is what stops\n"
+             "hair reading as plastic.", 0.40f)) {
+    h.set_roughness(rough);
+    result.changed = true;
+  }
+  result.changed |= slider("Backlit", &h.backlit, 0.0f, 0.5f, "%.3f",
+                           "Unreal's \"Backlit\" input: light transmitted through strands lit from\n"
+                           "behind. UE artists keep it small (0-0.1).", 0.06f);
+  result.changed |= slider("Stylise", &h.stylise, 0.0f, 1.0f, "%.2f",
+                           "How much of the demo's punchy lift / rim / sheen / saturation is kept.\n"
+                           "Unreal's model has no such terms: 0 is the plain physical result,\n"
+                           "1 is the original web demo.", 0.45f);
+  ImGui::PushStyleColor(ImGuiCol_Text, kTextDim);
+  ImGui::TextWrapped("Base Colour and Tangent are the dye and the per-strand tangent, so a UE groom "
+                     "material ports over as these four numbers plus the dye.");
+  ImGui::PopStyleColor();
+
   // Open by default: this is the demo's own parameter set, and a panel that
   // hides the parameters the demo exposes is not a port of it.
   if (ImGui::CollapsingHeader(ICON_AUTO_FIX "  Operators", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -1303,6 +1333,10 @@ std::string UiPanel::cli_command(const Scene& scene) {
   if (h.clump_size > 0.001f) push("--clump-size %.3f", f3(h.clump_size));
   if (h.fill_light != HairSettings{}.fill_light) push("--fill %.2f", f3(h.fill_light));
   if (h.sheen != HairSettings{}.sheen) push("--sheen %.2f", f3(h.sheen));
+  if (h.scatter != HairSettings{}.scatter) push("--scatter %.2f", f3(h.scatter));
+  if (h.specular != HairSettings{}.specular) push("--specular %.2f", f3(h.specular));
+  if (h.backlit != HairSettings{}.backlit) push("--backlit %.3f", f3(h.backlit));
+  if (h.stylise != HairSettings{}.stylise) push("--stylise %.2f", f3(h.stylise));
   if (h.material == 0) push("--material std_blond");
   if (h.render_mode == 0) push("--lines");
   if (!h.collide) push("--no-collide");

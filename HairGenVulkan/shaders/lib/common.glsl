@@ -34,6 +34,12 @@ layout(set = 0, binding = 0) uniform FrameBlock {
   vec4 ground0;      // checker amount, squares per unit, fade distance, unused
   vec4 ground1;      // checker light square, unused
   vec4 ground2;      // checker dark square, unused
+  // Unreal's Hair shading model exposes Base Colour, Scatter, Specular,
+  // Roughness, Tangent and Backlit. The lookup tables above are the physics;
+  // these are the controls, in UE's own vocabulary, so a groom material maps
+  // onto this renderer without translation. z is Backlit, w is how much of the
+  // demo's stylised lift/rim/sheen is kept (UE's model has none of it).
+  vec4 ueHair;       // scatter, specular, backlit, stylise
 } frame;
 
 layout(set = 0, binding = 1) uniform sampler2DShadow objShadMap;
