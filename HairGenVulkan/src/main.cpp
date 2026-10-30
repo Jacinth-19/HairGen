@@ -76,6 +76,9 @@ void usage() {
       "  --deep-shadow F       bound absorption by the measured hair (default 0.65, 0 = off)\n"
       "  --deep-density F      scale of the measured hair density (default 1.0)\n"
       "  --hair-ao F           hair-mass ambient occlusion from that density (default 0.5)\n"
+      "  --deep-kernel N       transmittance kernel, as r.HairStrands.DeepShadow.KernelType:\n"
+      "                        0 linear (default), 1 PCF 2x2, 2 PCF 6x4, 3 PCSS, 4 PCF 6x6\n"
+      "  --kernel-aperture F   PCSS aperture in degrees (default 3.0)\n"
       "  --list-styles         print the hairstyle catalogue\n"
       "  --list-dyes           print the dye palette\n"
       "  --root-darken F       root->tip ramp depth (1 = mravella MIN_COLOR, default 1)\n"
@@ -345,6 +348,9 @@ int main(int argc, char** argv) {
     else if (match(a, "--deep-shadow")) scene.hair.deep_shadow = float(std::atof(next(a).c_str()));
     else if (match(a, "--deep-density")) scene.hair.deep_density = float(std::atof(next(a).c_str()));
     else if (match(a, "--hair-ao")) scene.hair.hair_ao = float(std::atof(next(a).c_str()));
+    else if (match(a, "--deep-kernel")) scene.hair.deep_kernel = std::atoi(next(a).c_str());
+    else if (match(a, "--kernel-aperture"))
+      scene.hair.kernel_aperture = float(std::atof(next(a).c_str()));
     // Hair transparency: weighted blended OIT (default) or the coverage-tested
     // single layer.
     else if (match(a, "--oit")) scene.hair.oit = std::atoi(next(a).c_str()) != 0;

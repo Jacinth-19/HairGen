@@ -128,6 +128,12 @@ struct HairSettings {
   float deep_shadow = 0.65f;
   float deep_density = 1.0f;
   float hair_ao = 0.5f;
+  // Unreal's r.HairStrands.DeepShadow.KernelType: the kernel used to reconstruct
+  // the deep opacity map's transmittance. 0 linear (the demo's 4-tap bilinear),
+  // 1 PCF 2x2, 2 PCF 6x4, 3 PCSS, 4 PCF 6x6 accurate. `kernel_aperture` is the
+  // PCSS aperture in degrees (r.HairStrands.DeepShadow.KernelAperture).
+  int deep_kernel = 0;
+  float kernel_aperture = 3.0f;
 
   // UE's Roughness drives the longitudinal roughness of the three fibre paths.
   // One control, three deviations - the mapping is monotone and hits the

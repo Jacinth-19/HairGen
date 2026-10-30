@@ -53,6 +53,24 @@ float hairMassDensity(vec2 uv) {
 // `spread` (light spread into neighbouring fibers) and `directF` (the fraction
 // of the direct beam that reaches the point). `massDensity` is the hair density
 // along the light ray at this texel, from hairMassDensity().
+// Per-strand coverage and the demo's fiber weights, shared by every tap of the
+// transmittance kernels below.
+const float kCoverage = 0.05;
+const vec3 kWf = vec3(0.028135575, 0.027669785, 0.027669785);
+
+// One bilinearly reconstructed sample of the deep opacity map at light-space uv:
+// optical depth from the nearest strand to the receiver, clipped by the measured
+// mass, then the demo's (1 - coverage)^n transmittance.
+void deepOpacityTap(vec2 uv, float depth, float hairDensity, vec3 a_f, float bound, float deepAmt,
+                    out float dir, out vec3 t_d, out vec3 spr) {
+  float z = texture(hairShadMap, uv).r;
+  float n = max(0.0, depth - z) * hairDensity;
+  if (deepAmt > 0.001) n = mix(n, min(n, bound), deepAmt);
+  dir = pow(1.0 - kCoverage, n);
+  t_d = pow(vec3(1.0 - kCoverage * (1.0 - a_f)), vec3(n));
+  spr = n * kCoverage * kWf;
+}
+
 vec3 hairShadow(out vec3 spread, out float directF, vec3 pShad, float massDensity) {
   if (any(lessThan(pShad.xy, vec2(0.0))) || any(greaterThan(pShad.xy, vec2(1.0)))) {
     // No strand data here: the beam is unobstructed.
@@ -86,26 +104,92 @@ vec3 hairShadow(out vec3 spread, out float directF, vec3 pShad, float massDensit
     bound = max(massDensity / kFullMassDensity * hairDensity * max(frame.deepShadow.z, 0.01), 0.0);
 
   ivec2 size = textureSize(hairShadMap, 0);
-  vec2 t = pShad.xy * vec2(size) + 0.5;
-  vec2 f = t - floor(t);
-  vec2 s = 0.5 / vec2(size);
+  vec2 texel = 1.0 / vec2(size);
 
-  float dir[4];
-  vec3 spr[4], t_d[4];
-  for (int i = 0; i < 4; ++i) {
-    vec2 offs = vec2((i == 1 || i == 3) ? s.x : -s.x, (i >= 2) ? s.y : -s.y);
-    float z = texture(hairShadMap, pShad.xy + offs).r;
-    float h = max(0.0, pShad.z - z);
-    float n = h * hairDensity;
-    // Deep shadow: cap the optical path at the measured density of the mass.
-    if (deepAmt > 0.001) n = mix(n, min(n, bound), deepAmt);
-    dir[i] = pow(1.0 - coverage, n);
-    t_d[i] = pow(vec3(1.0 - coverage * (1.0 - a_f)), vec3(n));
-    spr[i] = n * coverage * w_f;
+  // ---- transmittance kernel -----------------------------------------------
+  // Unreal exposes this as r.HairStrands.DeepShadow.KernelType:
+  //   0 linear, 1 PCF 2x2, 2 PCF 6x4, 3 PCSS, 4 PCF 6x6 accurate
+  // Kernel 0 is the demo's own reconstruction - a 2x2 bilinear fetch of the map,
+  // which is what "linear" means for a deep opacity map and costs four taps.
+  // The PCF kernels average bilinearly reconstructed taps over a fixed footprint
+  // in map texels (2x2, 6x4, 6x6), which trades cost for a wider penumbra. PCSS
+  // first searches for the average blocker depth and then sizes the same 6x4
+  // kernel by the aperture angle and the distance to that blocker, so a strand
+  // close to the surface gets a tight shadow and a deep one a wide one.
+  const int kernel = int(frame.deepShadow2.x + 0.5);
+
+  if (kernel <= 0) {
+    vec2 t = pShad.xy * vec2(size) + 0.5;
+    vec2 f = t - floor(t);
+    vec2 s = 0.5 / vec2(size);
+
+    float dir[4];
+    vec3 spr[4], t_d[4];
+    for (int i = 0; i < 4; ++i) {
+      vec2 offs = vec2((i == 1 || i == 3) ? s.x : -s.x, (i >= 2) ? s.y : -s.y);
+      float z = texture(hairShadMap, pShad.xy + offs).r;
+      float h = max(0.0, pShad.z - z);
+      float n = h * hairDensity;
+      // Deep shadow: cap the optical path at the measured density of the mass.
+      if (deepAmt > 0.001) n = mix(n, min(n, bound), deepAmt);
+      dir[i] = pow(1.0 - coverage, n);
+      t_d[i] = pow(vec3(1.0 - coverage * (1.0 - a_f)), vec3(n));
+      spr[i] = n * coverage * w_f;
+    }
+    directF = bilinear4(dir, f);
+    spread = bilinear4(spr, f);
+    return bilinear4(t_d, f);
   }
-  directF = bilinear4(dir, f);
-  spread = bilinear4(spr, f);
-  return bilinear4(t_d, f);
+
+  const int kw = kernel == 1 ? 2 : 6;
+  const int kh = kernel == 1 ? 2 : (kernel == 4 ? 6 : 4);
+  float stepTexels = 1.0;
+  if (kernel == 3) {
+    // PCSS blocker search: the average depth of the strands that actually
+    // occlude this point, over a 3x3 texel search.
+    float blockerSum = 0.0;
+    float blockerCount = 0.0;
+    for (int j = -1; j <= 1; ++j) {
+      for (int i = -1; i <= 1; ++i) {
+        float z = texture(hairShadMap, pShad.xy + vec2(float(i), float(j)) * texel).r;
+        if (pShad.z - z > 1e-4) {
+          blockerSum += z;
+          blockerCount += 1.0;
+        }
+      }
+    }
+    if (blockerCount < 0.5) {
+      // No blocker: nothing between this point and the light.
+      spread = vec3(0.0);
+      directF = 1.0;
+      return vec3(1.0);
+    }
+    // Penumbra size from the aperture angle and the distance to the blocker. The
+    // map's depth is normalised over the light frustum, so the half-resolution
+    // factor turns it into texels (KernelAperture is in degrees, as in Unreal).
+    const float apertureRad = radians(clamp(frame.deepShadow2.y, 0.1, 30.0));
+    stepTexels = clamp((pShad.z - blockerSum / blockerCount) * tan(apertureRad) * float(size.x) * 0.5,
+                       1.0, 10.0);
+  }
+
+  float accDir = 0.0;
+  vec3 accTd = vec3(0.0), accSpr = vec3(0.0);
+  for (int j = 0; j < kh; ++j) {
+    for (int i = 0; i < kw; ++i) {
+      vec2 o = vec2(float(i) - (float(kw) - 1.0) * 0.5, float(j) - (float(kh) - 1.0) * 0.5) *
+               stepTexels * texel;
+      float d;
+      vec3 td, sp;
+      deepOpacityTap(pShad.xy + o, pShad.z, hairDensity, a_f, bound, deepAmt, d, td, sp);
+      accDir += d;
+      accTd += td;
+      accSpr += sp;
+    }
+  }
+  const float inv = 1.0 / float(kw * kh);
+  directF = accDir * inv;
+  spread = accSpr * inv;
+  return accTd * inv;
 }
 
 // Object visibility * hair transmittance for a world-space light coordinate.

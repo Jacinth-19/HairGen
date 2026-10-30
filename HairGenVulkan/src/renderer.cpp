@@ -49,8 +49,9 @@ struct FrameUbo {
   float ground2[4];  // checker dark square (rgb), unused
   float ueHair[4];   // Unreal Hair model: scatter, specular, backlit, stylise
   float deepShadow[4];  // deep shadow amount, hair AO, density scale, unused
+  float deepShadow2[4]; // transmittance kernel (0..4), PCSS aperture in degrees
 };
-static_assert(sizeof(FrameUbo) == (16 * 5 + 4 * 26) * 4, "unexpected UBO packing");
+static_assert(sizeof(FrameUbo) == (16 * 5 + 4 * 27) * 4, "unexpected UBO packing");
 
 void copy_mat(float* dst, const mat4& m) { std::memcpy(dst, m.m, sizeof(float) * 16); }
 
@@ -1630,6 +1631,11 @@ void Renderer::update_frame_ubo(double time, uint32_t frame_index) {
   u.deepShadow[1] = scene_.hair.hair_ao;
   u.deepShadow[2] = scene_.hair.deep_density;
   u.deepShadow[3] = 0.0f;
+  // r.HairStrands.DeepShadow.KernelType / KernelAperture.
+  u.deepShadow2[0] = float(scene_.hair.deep_kernel);
+  u.deepShadow2[1] = scene_.hair.kernel_aperture;
+  u.deepShadow2[2] = 0.0f;
+  u.deepShadow2[3] = 0.0f;
 
   std::memcpy(ubo_.mapped, &u, sizeof(u));
 }

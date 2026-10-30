@@ -800,6 +800,24 @@ void UiPanel::draw_hair_window(Scene& scene, UiResult& result) {
                            "Ambient occlusion inside the mass from the same measured density:\n"
                            "strands buried under other strands see less sky and less fill.\n"
                            "Unreal takes this from the groom's voxelization.", 0.5f);
+  // r.HairStrands.DeepShadow.KernelType, the menu Unreal exposes for the kernel
+  // that reconstructs hair transmittance out of the deep opacity map.
+  static const char* kKernels[] = {"Linear", "PCF 2x2", "PCF 6x4", "PCSS", "PCF 6x6 accurate"};
+  int k = h.deep_kernel;
+  ImGui::SetNextItemWidth(150.0f);
+  if (ImGui::Combo("Kernel", &k, kKernels, 5)) {
+    h.deep_kernel = k;
+    result.changed = true;
+  }
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Unreal's r.HairStrands.DeepShadow.KernelType.\n\n"
+                      "Linear is one bilinear reconstruction of the deep opacity map. The "
+                      "PCF kernels average a wider footprint in map texels for a softer "
+                      "penumbra, and PCSS sizes that footprint from the blocker distance.");
+  if (h.deep_kernel == 3)
+    result.changed |= slider("Aperture", &h.kernel_aperture, 0.5f, 20.0f, "%.1f deg",
+                             "PCSS aperture angle (r.HairStrands.DeepShadow.KernelAperture):\n"
+                             "how wide a penumbra the blocker distance is allowed to open.", 3.0f);
 
   // Open by default: this is the demo's own parameter set, and a panel that
   // hides the parameters the demo exposes is not a port of it.
@@ -1356,6 +1374,8 @@ std::string UiPanel::cli_command(const Scene& scene) {
   if (h.deep_shadow != HairSettings{}.deep_shadow) push("--deep-shadow %.2f", f3(h.deep_shadow));
   if (h.deep_density != HairSettings{}.deep_density) push("--deep-density %.2f", f3(h.deep_density));
   if (h.hair_ao != HairSettings{}.hair_ao) push("--hair-ao %.2f", f3(h.hair_ao));
+  if (h.deep_kernel != HairSettings{}.deep_kernel) push("--deep-kernel %d", h.deep_kernel);
+  if (h.kernel_aperture != HairSettings{}.kernel_aperture) push("--kernel-aperture %.2f", f3(h.kernel_aperture));
   if (h.scatter != HairSettings{}.scatter) push("--scatter %.2f", f3(h.scatter));
   if (h.specular != HairSettings{}.specular) push("--specular %.2f", f3(h.specular));
   if (h.backlit != HairSettings{}.backlit) push("--backlit %.3f", f3(h.backlit));

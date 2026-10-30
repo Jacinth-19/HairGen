@@ -43,7 +43,8 @@ layout(set = 0, binding = 0) uniform FrameBlock {
   // Deep shadow (UE "Deep Shadow"): x = how much of the two-layer slab model is
   // used (0 = the old single-layer Beer-Lambert), y = hair mass AO strength,
   // z = extra density scale for the slab, w unused.
-  vec4 deepShadow;
+  vec4 deepShadow;   // deep shadow amount, hair AO, density scale, unused
+  vec4 deepShadow2;  // transmittance kernel type (0..4), PCSS aperture (degrees)
 } frame;
 
 layout(set = 0, binding = 1) uniform sampler2DShadow objShadMap;

@@ -252,6 +252,28 @@ The density is then used twice, both times scaled by `--deep-density`:
   ambient, the mravella fill light and the in-mass bounce lift - exactly the
   inputs `AO` drives in UE's Hair model.
 
+**Selectable transmittance kernel** (`--deep-kernel`, default 0). Unreal
+reconstructs hair transmittance out of the deep opacity map with one of five
+kernels, `r.HairStrands.DeepShadow.KernelType`: *0 linear, 1 PCF_2x2, 2 PCF_6x4,
+3 PCSS, 4 PCF_6x6_Accurate*. The same menu is here - `Linear` is the demo's own
+4-tap bilinear reconstruction of the nearest-strand map, the PCF kernels average
+that reconstruction over a fixed footprint in map texels, and `PCSS` first
+searches for the average blocker depth and then sizes the same kernel from the
+aperture angle (`--kernel-aperture`, Unreal's `KernelAperture` in degrees) and
+the distance to that blocker. The trade is cost against penumbra width: 4 taps
+for linear, 16 for 2x2, 96 for 6x4 and 144 for 6x6, each of which also pays the
+per-tap `pow()` absorption. Kernel 0 is therefore also the cheapest and stays the
+default - the others exist for when a coarse deep opacity map is what you have.
+
+![transmittance kernels](media/kernel_compare.jpg)
+
+At the default 1024^2 the kernels land within a fraction of a pixel of each
+other; the sheet above is a 160^2 deep opacity map, where one map texel is about
+a pixel on screen and the difference between "one bilinear fetch" and "a filtered
+footprint" is the difference between blocky shadow patches on the fringe and a
+strand cloud. That is the case Unreal's kernels are for - coarseness is filtered
+in the lookups, never dithered in the output.
+
 `HGEN_DBG=50` shows the density map, `HGEN_DBG=51` the resulting mass AO.
 Defaults: `--deep-shadow 0.65`, `--deep-density 1.0`, `--hair-ao 0.5`;
 `--deep-shadow 0` restores the plain single-layer Beer–Lambert path and skips
@@ -592,6 +614,7 @@ meson setup build --reconfigure -Dintegration_render=true && meson test -C build
 | `media/hero_1536.png` | 1536² hero render |
 | `media/contact_sheet.jpg` | 12-up overview (hero + dye palette + hairstyles) |
 | `media/dye_sheet.jpg` | the full dye palette on one sheet |
+| `media/kernel_compare.jpg` | Unreal's five `DeepShadow.KernelType` kernels (linear, PCF 2x2, PCF 6x4, PCSS, PCF 6x6) on a deliberately coarse 160² deep opacity map, where the filtering is what removes the blocky shadow patches |
 | `media/oit_compare.jpg` | **order-independent hair**: coverage-tested (`--no-oit`) vs weighted blended OIT (default) on the same close-up - the mass reads as deep as it is instead of as deep as its frontmost strand |
 | `media/deep_shadow.jpg` | UE **Deep Shadow**, off vs 0.65: the absorption bound from the measured hair mass lifts the shaded fringe and the skin under it (2× crops below) |
 | `media/deep_shadow_maps.jpg` | the two new maps: the light-ray density integral, and the hair-mass AO derived from it |
