@@ -32,6 +32,14 @@ test('assets', test_assets,
   args: [join_paths(meson.current_source_dir(), '..', 'assets', 'hairgen_assets.bin')],
   suite: 'unit')
 
+# The exported head GLB is a deliverable no other test reads (the renderer never
+# opens it), so it gets its own structural check.
+test('glb', python,
+  args: [join_paths(meson.current_source_dir(), 'test_glb.py'),
+         join_paths(meson.current_source_dir(), '..', 'assets', 'July_Head.glb')],
+  timeout: 120,
+  suite: 'unit')
+
 # ---- integration: render one small frame headlessly --------------------------
 # Skipped automatically when no Vulkan ICD can be loaded (set
 # VK_ICD_FILENAMES to e.g. a SwiftShader or lavapipe JSON to enable it).

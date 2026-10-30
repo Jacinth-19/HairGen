@@ -129,6 +129,10 @@ node = find_program('node', required: false)
 if node.found()
   run_target('assets',
     command: [node, files('tools/export_assets.js')])
+  # The head as a self-contained glTF (mesh + every skin map). Checked in, so
+  # this is only needed after the bundle or the textures change.
+  run_target('glb',
+    command: [node, files('tools/export_glb.js')])
 endif
 
 # ---- capture pipeline (pictures / video / GIF) -------------------------------

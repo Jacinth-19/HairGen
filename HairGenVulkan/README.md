@@ -578,6 +578,55 @@ meson setup build --reconfigure -Dintegration_render=true && meson test -C build
 | `media/hair_shading_sweep.mp4` | **hair shading sweep**: a full 360° sun orbit around the bust, 40 frames at 14 fps, so the two specular lobes, the scatter and the backlit transmission can be followed across the mass (see below) |
 | `media/hair_shading_sweep.gif` | the same clip as a looping GIF |
 | `media/hair_shading_sweep.jpg` | four frames of it as a filmstrip |
+| `media/July_Head_preview.png` | the exported `assets/July_Head.glb` rasterised from four sides by `tools/preview_glb.py` (a self-check of geometry + UVs + embedded textures) |
+
+## Head export: `assets/July_Head.glb`
+
+The head the renderer draws, plus every skin map, in one self-contained glTF 2.0
+binary (3.59 MiB, no sidecar files, no external references):
+
+```sh
+node tools/export_glb.js                        # -> assets/July_Head.glb
+python3 tools/preview_glb.py assets/July_Head.glb media/July_Head_preview.png
+meson test -C build glb                         # structural check (tests/test_glb.py)
+```
+
+The geometry is read out of `assets/hairgen_assets.bin`, not re-derived from
+`july-low.js`, so the GLB is by construction the same head the renderer draws -
+same centring and 2-unit normalisation, same neck cut, same normals, same
+13 k-triangle mesh. The exporter still re-checks the one thing a bundle cannot
+tell it: that the triangle winding agrees with the vertex normals, and flips it if
+it does not (it agrees, so nothing is touched).
+
+| glTF | contents | size |
+|---|---|---|
+| mesh | 9 294 verts / 14 969 tris, `POSITION` `NORMAL` `TEXCOORD_0`, 16-bit indices, single-sided, CCW | 0.6 MiB |
+| `baseColorTexture` | `skin.albedo` - `july.jpg`, UV island inpainted outward so no texel under the island is black | 1024², 1.56 MiB |
+| `normalTexture` | `skin.normal` - tangent space, derived from the supplied height map with prefiltered pores | 512², 229 KiB |
+| `occlusionTexture` R + `metallicRoughnessTexture` G/B | `skin.ao` / `255 - skin.spec` / 0 - the usual ORM packing, so one image serves both slots | 1024², 749 KiB |
+| *(unnamed in glTF)* | `textures/july_height.png`, embedded as shipped and named in the document `extras` | 1024², 718 KiB |
+
+Skin is a dielectric (`metallicFactor: 0`) and the bundle's spec map is a *gloss*
+mask - the shader mixes 0.35..1.0 of it into the sun highlight - so it becomes
+roughness as `255 - spec`. AO and roughness are packed R/G of one RGB image
+(R = AO, G = roughness, B = 0) because that is the one arrangement every loader
+understands; the material's `extras` spell the mapping out so nothing depends on
+guessing which channel was which. The height map has no core glTF slot at all, so
+it is embedded unreferenced (a legal image) and pointed at from the document
+`extras.heightTexture` - a round trip back through the exporter needs it, since
+the normal map is derived from it.
+
+Two conventions the file inherits from the scene, both stated in its `extras`:
+**+Y up**, and **1 unit = 1 renderer unit** (the head is normalised to 2 units on
+its largest axis and shifted down by 0.2). UVs keep their original orientation -
+`v = 0` is the first row of the image, which is what both glTF and this renderer
+assume - so the face is upright in any viewer without a flip.
+
+Not in the file, on purpose: the hair (54 k procedural strands, generated in the
+vertex shader - there is no mesh to export), the plinth, and the Marschner LUTs.
+The scan's UV island only covers the front of the skull, so the back and sides
+read as open in the preview - that is the hair region, and the renderer covers it
+with strands rather than with a texture.
 
 ## Layout
 
@@ -593,10 +642,13 @@ shaders/        GLSL 450 sources + lib/common.glsl, lib/shadow.glsl,
                 lib/sky.glsl (clouds + rain veil)  ->  src/shaders_generated.hpp
                 (edit a shader, then `ninja -C build shaders && ninja -C build`;
                  the `shaders-check` target fails the build on a stale header)
-tools/          export_assets.js, compile_shaders.py, capture.py, make_icons.py,
+tools/          export_assets.js, export_glb.js (head -> July_Head.glb),
+                preview_glb.py (numpy+Pillow rasteriser, verifies a GLB),
+                compile_shaders.py, capture.py, make_icons.py,
                 softvulkan.sh (CPU Vulkan for headless/CI rendering)
-tests/          unit + integration tests (meson)
-assets/         hairgen_assets.bin, fonts/{Roboto-Regular,Roboto-Medium,
+tests/          unit + integration tests (meson), incl. test_glb.py
+assets/         hairgen_assets.bin, July_Head.glb (the head + skin maps as glTF),
+                fonts/{Roboto-Regular,Roboto-Medium,
                 MaterialDesignIcons-Subset}.ttf, web/{studio,index}.html,
                 web/{studio,style}.css, web/{studio,app}.js
 third_party/    vulkan headers, miniz, imgui (1.91.8-docking: core only)
@@ -605,8 +657,9 @@ media/          rendered deliverables
 
 Regenerate shaders with `ninja -C build shaders` (needs `glslangValidator` on
 `PATH` or in `tools/bin/`, e.g.
-`npm pack glslang-validator-prebuilt-predownloaded`) and the asset bundle with
-`ninja -C build assets` (needs node). The icon font is regenerated with
+`npm pack glslang-validator-prebuilt-predownloaded`), the asset bundle with
+`ninja -C build assets` and the head GLB with `ninja -C build glb` (both need
+node). The icon font is regenerated with
 `python3 tools/make_icons.py --mdi <@mdi/font package> --ttf
 assets/fonts/MaterialDesignIcons-Subset.ttf --header src/ui_icons.hpp` (needs
 `fonttools`); the text fonts are plain Roboto TTFs from `roboto-fontface`,

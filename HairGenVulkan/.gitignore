@@ -13,5 +13,8 @@ hairgen
 # Shader scratch files
 shaders/spv/_*
 
+# Python bytecode from the test tools
+__pycache__/
+
 # Capture intermediates (the rendered deliverables in media/ are kept)
 media/frames/
