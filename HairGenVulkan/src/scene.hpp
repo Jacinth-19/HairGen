@@ -109,6 +109,20 @@ struct HairSettings {
   // the straight physical result.
   float stylise = 0.45f;
 
+  // ---- deep shadow ------------------------------------------------------
+  // Unreal shades grooms against a voxelized density volume, and lights that
+  // cast "Deep Shadow" use a multi-layer deep opacity map, so absorption
+  // saturates at the hair that is actually on the beam instead of growing
+  // without bound as the shaded point gets deeper. The density is measured by an
+  // extra additive pass in light space (shaders/hair_density.frag, the 2D
+  // stand-in for the voxel volume): `deep_shadow` blends that bound into the
+  // transmittance (0 = the demo's single-layer Beer-Lambert), `deep_density`
+  // scales the measured density, and `hair_ao` uses the same density to occlude
+  // ambient light inside the mass.
+  float deep_shadow = 0.65f;
+  float deep_density = 1.0f;
+  float hair_ao = 0.5f;
+
   // UE's Roughness drives the longitudinal roughness of the three fibre paths.
   // One control, three deviations - the mapping is monotone and hits the
   // defaults at roughness 0.4 (r 8 / tt 10 / trt 15 degrees).

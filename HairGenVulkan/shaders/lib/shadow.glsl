@@ -37,10 +37,23 @@ vec3 bilinear4(vec3 v[4], vec2 f) {
   return mix(mix(v[0], v[1], f.x), mix(v[2], v[3], f.x), f.y);
 }
 
+// Amount of hair along the light ray at this light-space texel.
+//
+// hairDensityMap accumulates one unit per covered fragment (see
+// hair_density.frag), so this is a line integral of density through the mass -
+// the quantity Unreal takes from its voxelized groom. One thin strand and forty
+// strands at the same depth are indistinguishable in a nearest-depth map; here
+// they are 1 and 40. That is what makes the absorption bound and the mass AO
+// below measurable instead of assumed.
+float hairMassDensity(vec2 uv) {
+  return texture(hairDensityMap, uv).r;
+}
+
 // Hair shadow lookup for a light-space point. Returns the tinted transmittance,
 // `spread` (light spread into neighbouring fibers) and `directF` (the fraction
-// of the direct beam that reaches the point).
-vec3 hairShadow(out vec3 spread, out float directF, vec3 pShad) {
+// of the direct beam that reaches the point). `massDensity` is the hair density
+// along the light ray at this texel, from hairMassDensity().
+vec3 hairShadow(out vec3 spread, out float directF, vec3 pShad, float massDensity) {
   if (any(lessThan(pShad.xy, vec2(0.0))) || any(greaterThan(pShad.xy, vec2(1.0)))) {
     // No strand data here: the beam is unobstructed.
     spread = vec3(0.0);
@@ -54,6 +67,24 @@ vec3 hairShadow(out vec3 spread, out float directF, vec3 pShad) {
   const vec3 w_f = vec3(0.028135575, 0.027669785, 0.027669785);
   float hairDensity = frame.fiber2.z;
 
+  // Deep shadow (Unreal's deep opacity map): the absorption along a beam cannot
+  // exceed the hair that is actually on it. The single-layer model let n grow
+  // with depth without bound, which crushed skin under the fringe to black and
+  // turned the interior of the mass into a hole. `deepShadow.x` blends the
+  // measured bound in, `deepShadow.z` scales the measured density.
+  const float deepAmt = clamp(frame.deepShadow.x, 0.0, 1.0);
+  // n is the optical depth of the ray from the nearest strand to this point,
+  // computed with the demo's uniform density. The measured mass is the same
+  // integral over the *whole* mass, so normalising it against a full head of
+  // hair (kFullMassDensity: the measured value for a dense wig at the reference
+  // settings) turns it into the fraction of a full mass this ray crosses. A beam
+  // through a thin veil then cannot be as dark as one through the whole head,
+  // which is the classical single-layer failure the deep opacity map fixes.
+  const float kFullMassDensity = 90.0;
+  float bound = 1e9;
+  if (deepAmt > 0.001)
+    bound = max(massDensity / kFullMassDensity * hairDensity * max(frame.deepShadow.z, 0.01), 0.0);
+
   ivec2 size = textureSize(hairShadMap, 0);
   vec2 t = pShad.xy * vec2(size) + 0.5;
   vec2 f = t - floor(t);
@@ -66,6 +97,8 @@ vec3 hairShadow(out vec3 spread, out float directF, vec3 pShad) {
     float z = texture(hairShadMap, pShad.xy + offs).r;
     float h = max(0.0, pShad.z - z);
     float n = h * hairDensity;
+    // Deep shadow: cap the optical path at the measured density of the mass.
+    if (deepAmt > 0.001) n = mix(n, min(n, bound), deepAmt);
     dir[i] = pow(1.0 - coverage, n);
     t_d[i] = pow(vec3(1.0 - coverage * (1.0 - a_f)), vec3(n));
     spr[i] = n * coverage * w_f;
@@ -83,6 +116,7 @@ vec3 hairShadow(out vec3 spread, out float directF, vec3 pShad) {
 vec3 shadowTransmittance(out vec3 spread, out float directF, vec3 pLight, float bias) {
   vec3 pShad = pLight * 0.5 + 0.5;
   float visObj = objectVisibility(pShad, bias);
+  const float massDensity = hairMassDensity(pShad.xy);
 
   vec2 texel = 2.0 / vec2(textureSize(hairShadMap, 0));
   vec3 accT = vec3(0.0), spreadAcc = vec3(0.0);
@@ -93,7 +127,7 @@ vec3 shadowTransmittance(out vec3 spread, out float directF, vec3 pLight, float 
       vec3 sp;
       float df;
       vec3 offset = vec3(vec2(float(x), float(y)) * texel, 0.0);
-      vec3 tr = hairShadow(sp, df, pShad + offset);
+      vec3 tr = hairShadow(sp, df, pShad + offset, massDensity);
       accT += tr * w;
       accD += df * w;
       spreadAcc += sp * w;
@@ -107,6 +141,26 @@ vec3 shadowTransmittance(out vec3 spread, out float directF, vec3 pLight, float 
   spread = spreadAcc;
   directF = accD * visObj;
   return accT * visObj;
+}
+
+// Ambient occlusion of the hair mass, from the same slab thickness: a strand
+// buried inside a thick layer of other strands sees far less sky than one on the
+// outside. Unreal takes this from the groom's voxelization (shadow, transmittance
+// *and* ambient occlusion all come out of the same volume); with two depth layers
+// the thickness is the closest available stand-in, and it is what stops the inside
+// of the mass from being as bright as its silhouette.
+float hairMassAO(vec3 pLight) {
+  const float amt = clamp(frame.deepShadow.y, 0.0, 1.0);
+  if (amt <= 0.001) return 1.0;
+  const vec3 pShad = pLight * 0.5 + 0.5;
+  if (any(lessThan(pShad.xy, vec2(0.0))) || any(greaterThan(pShad.xy, vec2(1.0)))) return 1.0;
+  // Ambient inside the mass, from the same measured density: a point buried
+  // under many strands sees almost no sky, a point on the outer layer sees all
+  // of it. Unreal takes exactly this from the groom's voxelization.
+  const float d = hairMassDensity(pShad.xy) * max(frame.deepShadow.z, 0.01);
+  // 0.012 per unit: a full head of hair (70-130 units) lands between 0.2 and
+  // 0.45, which is the range Unreal's groom AO sits in.
+  return mix(1.0, exp(-d * 0.012), amt);
 }
 
 // Demo-compatible entry point used by the hair shader.

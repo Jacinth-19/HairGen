@@ -40,6 +40,10 @@ layout(set = 0, binding = 0) uniform FrameBlock {
   // onto this renderer without translation. z is Backlit, w is how much of the
   // demo's stylised lift/rim/sheen is kept (UE's model has none of it).
   vec4 ueHair;       // scatter, specular, backlit, stylise
+  // Deep shadow (UE "Deep Shadow"): x = how much of the two-layer slab model is
+  // used (0 = the old single-layer Beer-Lambert), y = hair mass AO strength,
+  // z = extra density scale for the slab, w unused.
+  vec4 deepShadow;
 } frame;
 
 layout(set = 0, binding = 1) uniform sampler2DShadow objShadMap;
@@ -50,7 +54,13 @@ layout(set = 0, binding = 5) uniform sampler2D hdrTex;  // main HDR target (post
 layout(set = 0, binding = 6) uniform sampler2D skinFlat;   // low-frequency skin albedo
 layout(set = 0, binding = 7) uniform sampler2D skinNormal; // tangent-space detail normal
 layout(set = 0, binding = 8) uniform sampler2D skinAO;     // ambient occlusion mask
-layout(set = 0, binding = 9) uniform sampler2D skinSpec;   // specular mask
+layout(set = 0, binding = 9) uniform sampler2D skinSpec;    // specular mask
+// Layer 1 of the hair deep-opacity map: the first hair surface *behind* the one
+// in hairShadMap. Their difference is the thickness of the strand slab the
+// light crosses, which is what turns a single depth layer into a deep shadow.
+// Density integral of the hair along each light ray (hair_density.frag): how
+// much hair a beam crosses, the stand-in for Unreal's voxelized groom density.
+layout(set = 0, binding = 10) uniform sampler2D hairDensityMap;
 
 layout(set = 1, binding = 0) uniform sampler3D tex_hairmesh;
 layout(set = 1, binding = 1) uniform sampler2D tex_uv;

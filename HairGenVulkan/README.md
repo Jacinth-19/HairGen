@@ -219,6 +219,44 @@ instead - stated rather than glossed over:
   (`--samples`, `--ssaa`) and derives alpha from the strand's projected width,
   which is the same idea with fewer moving parts.
 
+**Deep shadow, and hair-mass AO.** Unreal lights a groom against that density
+volume, and a light with **Deep Shadow** casts through a deep opacity map: the
+beam carries an *optical depth*, so absorption saturates at the hair that is
+actually on the ray instead of growing without bound as the shaded point gets
+deeper. The demo's single-layer model cannot express that - it knows where the
+nearest strand is, and it infers everything else from one global density
+constant, so one thin strand and forty strands at the same depth shade
+identically. Two probes fix it:
+
+| pass | image | what it measures |
+|---|---|---|
+| near depth (as before) | `hair_shadow_` · D32 | nearest strand along the light ray |
+| density integral (new) | `hair_density_` · R16F | *how much* hair the ray crosses: every covered fragment adds to the texel (no depth test, additive blend) |
+
+The density is then used twice, both times scaled by `--deep-density`:
+
+* **absorption bound** - `n = min(n, mass/full_mass × density × scale)` in
+  `lib/shadow.glsl`. The depth-integrated optical depth can no longer exceed the
+  hair that is on the beam, so a face behind a sparse fringe is not shaded as if
+  it were behind the whole head, and the interior of the mass stops reading as a
+  hole. Measured at `--density 40`: the fringed forehead lifts **+2.6 %**, the
+  crown **+0.8 %**, while a full mass is untouched. At the demo's default
+  `--density 2.5` the term is nearly inert, because the demo's shadows are
+  already soft there - the bound bites where the shadow slider makes shadows
+  dense (`--density` is the demo's log-scale *shadows* slider, 0.1-100).
+* **hair-mass AO** (`--hair-ao`, 0.5) - ambient light is occluded by the same
+  measured density (`exp(-0.012 × density)`), so strands buried in the mass see
+  less sky than the ones on the outside. Across the mass that is 0.26-0.48 of
+  full ambient at strength 1 (0.63-0.74 after the 0.5 default), which is the
+  range Unreal's groom AO sits in. It multiplies *indirect* light only - sky
+  ambient, the mravella fill light and the in-mass bounce lift - exactly the
+  inputs `AO` drives in UE's Hair model.
+
+`HGEN_DBG=50` shows the density map, `HGEN_DBG=51` the resulting mass AO.
+Defaults: `--deep-shadow 0.65`, `--deep-density 1.0`, `--hair-ao 0.5`;
+`--deep-shadow 0` restores the plain single-layer Beer–Lambert path and skips
+nothing else (the pass is cheap and always runs).
+
 **That dithering on the hair edge.** It was two separate things, and both are
 gone:
 
@@ -234,9 +272,10 @@ gone:
   last 1.5 % of the strand instead of ending on a full-alpha quad. A 0.4-pixel
   strand is now 40 % transparent instead of a coin flip.
 
-**Lighting & shadows.** Two 1 k² shadow maps per frame (object depth + hair
-depth for the transmittance model), image-based ambient from the sky table, sun
-disc, and an infinite ground plane that catches the ground shadow.
+**Lighting & shadows.** Three 1 k² maps per frame (object depth, hair depth for
+the transmittance model, and the hair density integral), image-based ambient
+from the sky table, sun disc, and an infinite ground plane that catches the
+ground shadow.
 
 **Studio checkerboard floor.** The floor under the bust is an analytic
 checkerboard (`ground.frag`) - no texture, so it is sharp at any distance, which
@@ -391,6 +430,10 @@ hairgen --out render.png [options]
                                        default 0.40) / transmission (0-0.1)
   --stylise F                          0 = plain physical, 1 = the demo's extra
                                        lift / rim / sheen / saturation (default .45)
+  --deep-shadow F                      UE Deep Shadow: how much of the measured
+                                       mass bounds absorption (default 0.65, 0 = off)
+  --deep-density F                     scale of the measured hair density (1.0)
+  --hair-ao F                          hair-mass AO from that density (0.5)
   --samples N --ssaa N                 MSAA (default 4) and supersampling (default 2)
   --clump F --clump-size F --curl F --curl-twists F --frizz F --kink F --fuzz F
   --density F --length-var F --hair-count N --segments N --width-px F
@@ -523,6 +566,8 @@ meson setup build --reconfigure -Dintegration_render=true && meson test -C build
 | `media/hero_1536.png` | 1536² hero render |
 | `media/contact_sheet.jpg` | 12-up overview (hero + dye palette + hairstyles) |
 | `media/dye_sheet.jpg` | the full dye palette on one sheet |
+| `media/deep_shadow.jpg` | UE **Deep Shadow**, off vs 0.65: the absorption bound from the measured hair mass lifts the shaded fringe and the skin under it (2× crops below) |
+| `media/deep_shadow_maps.jpg` | the two new maps: the light-ray density integral, and the hair-mass AO derived from it |
 | `media/model_sheet.jpg` | Unreal's Hair shading model at the ends of each documented input (roughness, specular, scatter, backlit, physical vs stylised) |
 | `media/aa_off.png`, `media/aa_on.png` | 1× vs 4× MSAA |
 | `media/weather_sheet.jpg` | dry / drizzle / rain / storm / sunset / noon / puddles / close-up |
@@ -574,9 +619,10 @@ Dear ImGui is vendored (docking branch, core only, no backends): `imgui.cpp`,
 ## Render graph
 
 ```
-hair shadow map (1024²) ─┐
-object shadow map (1024²)┼─> scene pass (4× MSAA, RGBA16F) ─> resolve
-sky LUT bake (256×128) ──┘        │  sky · ground · head · hair
+hair shadow map (1024²) ────┐
+hair density integral (R16F)┤
+object shadow map (1024²) ──┼─> scene pass (4× MSAA, RGBA16F) ─> resolve
+sky LUT bake (256×128) ─────┘        │  sky · ground · head · hair
                                   ├─> bloom prefilter (¼ res)
                                   ├─> bloom blur ×2 separable
                                   └─> post: bloom add, exposure, ACES,

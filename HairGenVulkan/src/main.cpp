@@ -67,6 +67,11 @@ void usage() {
       "  --backlit F           transmission from behind the strands (0-0.1, default 0.06)\n"
       "  --stylise F           0 = plain physical result, 1 = the demo's extra lift /\n"
       "                        rim / sheen / saturation (default 0.45)\n"
+      "\n"
+      "Deep shadow (Unreal's Deep Shadow, from a measured hair-density integral)\n"
+      "  --deep-shadow F       bound absorption by the measured hair (default 0.65, 0 = off)\n"
+      "  --deep-density F      scale of the measured hair density (default 1.0)\n"
+      "  --hair-ao F           hair-mass ambient occlusion from that density (default 0.5)\n"
       "  --list-styles         print the hairstyle catalogue\n"
       "  --list-dyes           print the dye palette\n"
       "  --root-darken F       root->tip ramp depth (1 = mravella MIN_COLOR, default 1)\n"
@@ -332,6 +337,10 @@ int main(int argc, char** argv) {
     else if (match(a, "--backlit")) scene.hair.backlit = float(std::atof(next(a).c_str()));
     else if (match(a, "--stylise") || match(a, "--stylize")) scene.hair.stylise = float(std::atof(next(a).c_str()));
     else if (match(a, "--roughness")) scene.hair.set_roughness(float(std::atof(next(a).c_str())));
+    // UE "Deep Shadow": two-layer deep opacity map + hair mass AO.
+    else if (match(a, "--deep-shadow")) scene.hair.deep_shadow = float(std::atof(next(a).c_str()));
+    else if (match(a, "--deep-density")) scene.hair.deep_density = float(std::atof(next(a).c_str()));
+    else if (match(a, "--hair-ao")) scene.hair.hair_ao = float(std::atof(next(a).c_str()));
     else if (match(a, "--fill")) scene.hair.fill_light = float(std::atof(next(a).c_str()));
     else if (match(a, "--sheen")) scene.hair.sheen = float(std::atof(next(a).c_str()));
     else if (match(a, "--checker")) scene.sky.checker = float(std::atof(next(a).c_str()));

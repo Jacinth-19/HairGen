@@ -48,8 +48,9 @@ struct FrameUbo {
   float ground1[4];  // checker light square (rgb), unused
   float ground2[4];  // checker dark square (rgb), unused
   float ueHair[4];   // Unreal Hair model: scatter, specular, backlit, stylise
+  float deepShadow[4];  // deep shadow amount, hair AO, density scale, unused
 };
-static_assert(sizeof(FrameUbo) == (16 * 5 + 4 * 25) * 4, "unexpected UBO packing");
+static_assert(sizeof(FrameUbo) == (16 * 5 + 4 * 26) * 4, "unexpected UBO packing");
 
 void copy_mat(float* dst, const mat4& m) { std::memcpy(dst, m.m, sizeof(float) * 16); }
 
@@ -549,6 +550,7 @@ Renderer::~Renderer() {
   destroy_pipeline(p_hair_);
   destroy_pipeline(p_obj_shadow_);
   destroy_pipeline(p_hair_shadow_);
+  destroy_pipeline(p_hair_density_);
   destroy_pipeline(p_prefilter_);
   destroy_pipeline(p_blur_);
   destroy_pipeline(p_post_);
@@ -559,13 +561,14 @@ Renderer::~Renderer() {
   };
   destroy_fb(fb_obj_shadow_);
   destroy_fb(fb_hair_shadow_);
+  destroy_fb(fb_hair_density_);
   destroy_fb(fb_sky_lut_);
   destroy_fb(fb_bloom1_);
   destroy_fb(fb_bloom2_);
   destroy_fb(fb_scene_);
   if (pass_depth_) gpu_.api.vkDestroyRenderPass(gpu_.device, pass_depth_, nullptr);
   for (auto* img : {&sky_lut_, &bloom1_, &bloom2_, &hdr_msaa_, &hdr_resolve_, &depth_msaa_, &final_color_,
-                    &obj_shadow_, &hair_shadow_, &dummy_tex_, &dummy_depth_, &tex_hairmesh_, &tex_uv_, &tex_uw_, &tex_v_,
+                    &obj_shadow_, &hair_shadow_, &hair_density_, &dummy_tex_, &dummy_depth_, &tex_hairmesh_, &tex_uv_, &tex_uw_, &tex_v_,
                     &tex_noise_, &tex_clump_, &tex_skin_, &tex_skin_flat_, &tex_skin_nrm_, &tex_skin_ao_,
                     &tex_skin_spec_})
     gpu_.destroy_image(*img);
@@ -625,12 +628,25 @@ void Renderer::create_targets() {
   hair_shadow_ = gpu_.create_image_2d(shadow_res_, shadow_res_, VK_FORMAT_D32_SFLOAT,
                                       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                                           VK_IMAGE_USAGE_SAMPLED_BIT);
+  // Density integral along each light ray: every strand fragment adds its
+  // covered area to the texel (see shaders/hair_density.frag). This is the
+  // stand-in for Unreal's voxelized groom density, and it is what lets the
+  // shading know how *much* hair a beam crosses, not just where it starts.
+  hair_density_ = gpu_.create_image_2d(shadow_res_, shadow_res_, VK_FORMAT_R16_SFLOAT,
+                                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                           VK_IMAGE_USAGE_SAMPLED_BIT);
   obj_shadow_.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
   hair_shadow_.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+  hair_density_.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
   pass_depth_ = make_depth_pass(gpu_, VK_FORMAT_D32_SFLOAT);
   fb_obj_shadow_ = make_framebuffer(gpu_, pass_depth_, {obj_shadow_.view}, shadow_res_, shadow_res_);
   fb_hair_shadow_ = make_framebuffer(gpu_, pass_depth_, {hair_shadow_.view}, shadow_res_, shadow_res_);
+  // The density pass needs a colour target with additive blending and no depth.
+  pass_density_ = make_color_pass(gpu_, VK_FORMAT_R16_SFLOAT,
+                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                  VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED);
+  fb_hair_density_ = make_framebuffer(gpu_, pass_density_, {hair_density_.view}, shadow_res_, shadow_res_);
 
   // One colour pass shared by every single-sample HDR stage.
   static VkRenderPass pass_color_hdr = VK_NULL_HANDLE;
@@ -671,6 +687,7 @@ void Renderer::create_targets() {
   barrier(sky_lut_, VK_IMAGE_ASPECT_COLOR_BIT);
   barrier(obj_shadow_, VK_IMAGE_ASPECT_DEPTH_BIT);
   barrier(hair_shadow_, VK_IMAGE_ASPECT_DEPTH_BIT);
+  barrier(hair_density_, VK_IMAGE_ASPECT_COLOR_BIT);
   barrier(dummy_depth_, VK_IMAGE_ASPECT_DEPTH_BIT);
   gpu_.end_once(cmd);
 }
@@ -972,6 +989,30 @@ void Renderer::create_pipelines() {
     p.alpha_to_coverage = true;
     p_hair_ = create_pipeline(gpu_, p);
   }
+  // The hair density integral along each light ray: the same hair geometry
+  // rasterised with no depth test and additive blending, so every covered
+  // fragment adds to the texel (see shaders/hair_density.frag).
+  {
+    // Density integral: no depth test, every fragment adds to the texel. The
+    // strand geometry is expanded in light space by the vertex shader (the same
+    // expanded ribbons the depth pass draws), so this counts covered area.
+    PipelineDesc p = d;
+    p.layout = layout_scene_;
+    p.render_pass = pass_density_;
+    p.depth_test = false;
+    p.depth_write = false;
+    p.blend = true;
+    p.src_color = VK_BLEND_FACTOR_ONE;
+    p.dst_color = VK_BLEND_FACTOR_ONE;
+    p.vert_spv = reinterpret_cast<const char*>(shader("hair.vert")->data);
+    p.vert_size = shader("hair.vert")->size;
+    p.frag_spv = reinterpret_cast<const char*>(shader("hair_density.frag")->data);
+    p.frag_size = shader("hair_density.frag")->size;
+    p.vertex_bindings = hair_bindings_;
+    p.vertex_attributes = hair_attrs_;
+    p.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+    p_hair_density_ = create_pipeline(gpu_, p);
+  }
   // object shadow
   {
     PipelineDesc p = d;
@@ -1100,6 +1141,8 @@ void Renderer::create_descriptors() {
       {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
       {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
       {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
+      // hair density along the light ray (see shaders/hair_density.frag)
+      {10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
   };
   dsl_frame_ = create_descriptor_set_layout(gpu_, frame_bindings);
 
@@ -1117,7 +1160,7 @@ void Renderer::create_descriptors() {
   sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
   sizes[0].descriptorCount = 4;
   sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  sizes[1].descriptorCount = uint32_t(4 * 10 + materials_.size() * 13);
+  sizes[1].descriptorCount = uint32_t(4 * 11 + materials_.size() * 13);
   sizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   sizes[2].descriptorCount = uint32_t(materials_.size() * 2);
   VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -1144,7 +1187,7 @@ void Renderer::create_descriptors() {
     check(gpu_.api.vkAllocateDescriptorSets(gpu_.device, &ai, &m.set), "vkAllocateDescriptorSets");
 
   auto frame_set = [&](VkDescriptorSet set, const Image& obj_shad, const Image& hair_shad,
-                       const Image& sky, const Image& bloom) {
+                       const Image& hair_density, const Image& sky, const Image& bloom) {
     write_descriptors(gpu_, {
         {set, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_NULL_HANDLE, VK_NULL_HANDLE, ubo_.buffer, 0, sizeof(FrameUbo)},
         {set, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, obj_shad.view, samp_shadow_, VK_NULL_HANDLE, 0, 0},
@@ -1156,12 +1199,13 @@ void Renderer::create_descriptors() {
         {set, 7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_skin_nrm_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
         {set, 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_skin_ao_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
         {set, 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_skin_spec_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+        {set, 10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, hair_density.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
     });
   };
-  frame_set(set_main_, obj_shadow_, hair_shadow_, sky_lut_, bloom1_);
-  frame_set(set_sky_, obj_shadow_, hair_shadow_, dummy_tex_, bloom1_);
-  frame_set(set_blur_, obj_shadow_, hair_shadow_, sky_lut_, bloom2_);
-  frame_set(set_shadow_, dummy_depth_, dummy_depth_, sky_lut_, bloom1_);
+  frame_set(set_main_, obj_shadow_, hair_shadow_, hair_density_, sky_lut_, bloom1_);
+  frame_set(set_sky_, obj_shadow_, hair_shadow_, hair_density_, dummy_tex_, bloom1_);
+  frame_set(set_blur_, obj_shadow_, hair_shadow_, hair_density_, sky_lut_, bloom2_);
+  frame_set(set_shadow_, dummy_depth_, dummy_depth_, dummy_depth_, sky_lut_, bloom1_);
 
   // Each material set is identical except for the six Marschner tables.
   for (MaterialSet& m : materials_) {
@@ -1288,6 +1332,10 @@ void Renderer::update_frame_ubo(double time, uint32_t frame_index) {
   u.ueHair[1] = scene_.hair.specular;
   u.ueHair[2] = scene_.hair.backlit;
   u.ueHair[3] = scene_.hair.stylise;
+  u.deepShadow[0] = scene_.hair.deep_shadow;
+  u.deepShadow[1] = scene_.hair.hair_ao;
+  u.deepShadow[2] = scene_.hair.deep_density;
+  u.deepShadow[3] = 0.0f;
 
   std::memcpy(ubo_.mapped, &u, sizeof(u));
 }
@@ -1322,16 +1370,32 @@ uint32_t Renderer::root_base_for_bundle(uint32_t bundle) const {
 }
 
 void Renderer::pass_shadows(VkCommandBuffer cmd) {
-  VkClearValue clear{};
-  clear.depthStencil = {1.0f, 0};
-
-  auto begin = [&](VkFramebuffer fb, uint32_t size) {
+  // `depth_clear` defaults to 1.0 (an empty LESS-tested map); the far layer of
+  // the deep opacity map is GREATER-tested and starts at 0.
+  auto begin = [&](VkFramebuffer fb, uint32_t size, float depth_clear = 1.0f) {
+    VkClearValue clear_value = {};
+    clear_value.depthStencil = {depth_clear, 0};
     VkRenderPassBeginInfo bi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     bi.renderPass = pass_depth_;
     bi.framebuffer = fb;
     bi.renderArea = {{0, 0}, {size, size}};
     bi.clearValueCount = 1;
-    bi.pClearValues = &clear;
+    bi.pClearValues = &clear_value;
+    gpu_.api.vkCmdBeginRenderPass(cmd, &bi, VK_SUBPASS_CONTENTS_INLINE);
+    VkViewport vp{0, 0, float(size), float(size), 0.0f, 1.0f};
+    VkRect2D sc{{0, 0}, {size, size}};
+    gpu_.api.vkCmdSetViewport(cmd, 0, 1, &vp);
+    gpu_.api.vkCmdSetScissor(cmd, 0, 1, &sc);
+  };
+  auto begin_density = [&](VkFramebuffer fb, uint32_t size) {
+    VkClearValue clear_value = {};
+    clear_value.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+    VkRenderPassBeginInfo bi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+    bi.renderPass = pass_density_;
+    bi.framebuffer = fb;
+    bi.renderArea = {{0, 0}, {size, size}};
+    bi.clearValueCount = 1;
+    bi.pClearValues = &clear_value;
     gpu_.api.vkCmdBeginRenderPass(cmd, &bi, VK_SUBPASS_CONTENTS_INLINE);
     VkViewport vp{0, 0, float(size), float(size), 0.0f, 1.0f};
     VkRect2D sc{{0, 0}, {size, size}};
@@ -1362,11 +1426,11 @@ void Renderer::pass_shadows(VkCommandBuffer cmd) {
   }
   end();
 
-  // Hair shadow map
-  begin(fb_hair_shadow_, uint32_t(shadow_res_));
-  if (scene_.hair.show_hair && hair_vert_count_) {
-    gpu_.api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p_hair_shadow_);
-    VkDescriptorSet sets[2] = {set_shadow_, hair_set()};
+  // Hair shadow maps: the nearest strand along the light, and the integral of
+  // hair density along the same ray (the deep-shadow term in lib/shadow.glsl).
+  auto draw_hair = [&](VkPipeline pipe, VkDescriptorSet frame_set) {
+    gpu_.api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    VkDescriptorSet sets[2] = {frame_set, hair_set()};
     gpu_.api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_scene_, 0, 2, sets, 0, nullptr);
     VkDeviceSize offset = 0;
     gpu_.api.vkCmdBindVertexBuffers(cmd, 0, 1, &hair_vb_.buffer, &offset);
@@ -1383,7 +1447,18 @@ void Renderer::pass_shadows(VkCommandBuffer cmd) {
                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
       gpu_.api.vkCmdDraw(cmd, hair_vert_count_, strands_for_bundle(b), 0, 0);
     }
-  }
+  };
+
+  const bool hair_visible = scene_.hair.show_hair && hair_vert_count_ > 0;
+  // Layer 0: the nearest strand along the light ray (normal depth test).
+  begin(fb_hair_shadow_, uint32_t(shadow_res_));
+  if (hair_visible) draw_hair(p_hair_shadow_, set_shadow_);
+  end();
+
+  // Density integral. Runs even when the hair is hidden so the texel set is
+  // cleared to "no hair" and the descriptor stays defined for the frame.
+  begin_density(fb_hair_density_, uint32_t(shadow_res_));
+  if (hair_visible) draw_hair(p_hair_density_, set_main_);
   end();
 }
 

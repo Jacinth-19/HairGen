@@ -132,8 +132,8 @@ int main() {
 
   // std430: every member is mat4/vec4, so the block is just the sum with no
   // padding, and the C++ side must match that byte count exactly.
-  if (offset != 720) {
-    std::fprintf(stderr, "test_ubo: block is %zu bytes, expected 720\n", offset);
+  if (offset != 736) {
+    std::fprintf(stderr, "test_ubo: block is %zu bytes, expected 736\n", offset);
     return 1;
   }
 

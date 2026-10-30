@@ -61,6 +61,18 @@ vec3 dyeAlongStrand(float tipParam) {
 void main() {
   if (vW > vWMax) discard;
 
+  // Debug views for the density map (HGEN_DBG=50/51): the hair mass density the
+  // light crosses, and the mass AO derived from it.
+  if (frame.misc.z > 49.5 && frame.misc.z < 50.5) {
+    const vec2 uv = clamp(vLightPos.xy * 0.5 + 0.5, 0.0, 1.0);
+    outColor = vec4(vec3(hairMassDensity(uv) * 0.0025), 1.0);  // 200 units = white
+    return;
+  }
+  if (frame.misc.z > 50.5 && frame.misc.z < 51.5) {
+    outColor = vec4(vec3(hairMassAO(vLightPos)), 1.0);
+    return;
+  }
+
   vec3 v = normalize(-vViewPos.xyz / vViewPos.w);
   vec3 t = normalize(vTangentView);
 
@@ -74,7 +86,11 @@ void main() {
   // never black on top: light keeps bouncing between the fibres. Lift the
   // deeply shadowed part towards the fibre's own tint.
   float stylise = clamp(frame.ueHair.w, 0.0, 1.0);
-  color += frame.fiber.rgb * 0.16 * stylise;
+  // Hair-mass AO (see hairMassAO): a strand buried under the mass intercepts
+  // less of the light that bounces around inside it, and less of the sky. Both
+  // of those are indirect, which is exactly what Unreal's groom AO drives.
+  float massAO = hairMassAO(vLightPos);
+  color += frame.fiber.rgb * 0.16 * stylise * massAO;
 
   // ---- dye colour (root -> tip) ----------------------------------------
   // Unit-luma hue of the target colour: multiplying by it recolours the fibre
@@ -157,6 +173,8 @@ void main() {
   vec3 nApprox = normalize(cross(t, v));
   vec3 tint = tintFibre;  // fibre colour, or the dye where it has taken over
   float occlusion = mix(0.22, 1.0, smoothstep(0.0, 0.85, vW));
+  // Strands buried inside the mass see less sky than the ones on the outside.
+  occlusion *= massAO;
   vec3 sky = skyAmbient(nApprox, 0.4);
   color += sky * tint * frame.fiber2.w * occlusion;
 

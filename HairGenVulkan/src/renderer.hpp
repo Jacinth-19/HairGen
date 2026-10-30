@@ -73,7 +73,7 @@ class Renderer {
 
   // textures
   Image sky_lut_, bloom1_, bloom2_, hdr_msaa_, hdr_resolve_, depth_msaa_, final_color_;
-  Image obj_shadow_, hair_shadow_, dummy_tex_, dummy_depth_;
+  Image obj_shadow_, hair_shadow_, hair_density_, dummy_tex_, dummy_depth_;
   Image tex_hairmesh_, tex_uv_, tex_uw_, tex_v_, tex_noise_, tex_clump_;
   int dbg_id_ = 0;
   Image tex_skin_, tex_skin_flat_, tex_skin_nrm_, tex_skin_ao_, tex_skin_spec_;
@@ -93,10 +93,12 @@ class Renderer {
 
   // passes / framebuffers
   VkRenderPass pass_depth_ = VK_NULL_HANDLE;
+  VkRenderPass pass_density_ = VK_NULL_HANDLE;  // additive hair density integral
   VkRenderPass sky_lut_pass_ = VK_NULL_HANDLE;   // single sample HDR colour pass
   VkRenderPass scene_pass_ = VK_NULL_HANDLE;
   VkRenderPass post_pass_ = VK_NULL_HANDLE;
-  VkFramebuffer fb_obj_shadow_ = VK_NULL_HANDLE, fb_hair_shadow_ = VK_NULL_HANDLE;
+  VkFramebuffer fb_obj_shadow_ = VK_NULL_HANDLE, fb_hair_shadow_ = VK_NULL_HANDLE,
+                fb_hair_density_ = VK_NULL_HANDLE;
   VkFramebuffer fb_sky_lut_ = VK_NULL_HANDLE, fb_bloom1_ = VK_NULL_HANDLE, fb_bloom2_ = VK_NULL_HANDLE;
   VkFramebuffer fb_scene_ = VK_NULL_HANDLE, fb_post_ = VK_NULL_HANDLE;
 
@@ -116,7 +118,8 @@ class Renderer {
   VkPipeline p_head_ = VK_NULL_HANDLE, p_bust_ = VK_NULL_HANDLE, p_hair_ = VK_NULL_HANDLE,
              p_hair_lines_ = VK_NULL_HANDLE;
   VkPipeline p_hairmesh_curves_ = VK_NULL_HANDLE, p_hairmesh_rects_ = VK_NULL_HANDLE;
-  VkPipeline p_obj_shadow_ = VK_NULL_HANDLE, p_hair_shadow_ = VK_NULL_HANDLE;
+  VkPipeline p_obj_shadow_ = VK_NULL_HANDLE, p_hair_shadow_ = VK_NULL_HANDLE,
+             p_hair_density_ = VK_NULL_HANDLE;
   VkPipeline p_prefilter_ = VK_NULL_HANDLE, p_blur_ = VK_NULL_HANDLE, p_post_ = VK_NULL_HANDLE;
   VkPipeline p_rain_ = VK_NULL_HANDLE;   // instanced procedural rain streaks
 

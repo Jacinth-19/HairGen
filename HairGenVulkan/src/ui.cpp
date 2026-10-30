@@ -786,6 +786,21 @@ void UiPanel::draw_hair_window(Scene& scene, UiResult& result) {
                      "material ports over as these four numbers plus the dye.");
   ImGui::PopStyleColor();
 
+  // ---- deep shadow -------------------------------------------------------
+  section(ICON_LAYERS_TRIPLE, "Deep shadow");
+  result.changed |= slider("Deep shadow", &h.deep_shadow, 0.0f, 1.0f, "%.2f",
+                           "Unreal's Deep Shadow: absorption is bounded by the hair that is\n"
+                           "actually on the light ray, measured by an extra additive pass in\n"
+                           "light space. 0 falls back to the demo's single depth layer.", 0.65f);
+  result.changed |= slider("Mass density", &h.deep_density, 0.05f, 2.0f, "%.2f",
+                           "Scale of the measured hair density - how much a unit of covered\n"
+                           "strand area counts as optical depth. Drives both the absorption\n"
+                           "bound and the mass AO.", 1.0f);
+  result.changed |= slider("Hair AO", &h.hair_ao, 0.0f, 1.0f, "%.2f",
+                           "Ambient occlusion inside the mass from the same measured density:\n"
+                           "strands buried under other strands see less sky and less fill.\n"
+                           "Unreal takes this from the groom's voxelization.", 0.5f);
+
   // Open by default: this is the demo's own parameter set, and a panel that
   // hides the parameters the demo exposes is not a port of it.
   if (ImGui::CollapsingHeader(ICON_AUTO_FIX "  Operators", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -1333,6 +1348,9 @@ std::string UiPanel::cli_command(const Scene& scene) {
   if (h.clump_size > 0.001f) push("--clump-size %.3f", f3(h.clump_size));
   if (h.fill_light != HairSettings{}.fill_light) push("--fill %.2f", f3(h.fill_light));
   if (h.sheen != HairSettings{}.sheen) push("--sheen %.2f", f3(h.sheen));
+  if (h.deep_shadow != HairSettings{}.deep_shadow) push("--deep-shadow %.2f", f3(h.deep_shadow));
+  if (h.deep_density != HairSettings{}.deep_density) push("--deep-density %.2f", f3(h.deep_density));
+  if (h.hair_ao != HairSettings{}.hair_ao) push("--hair-ao %.2f", f3(h.hair_ao));
   if (h.scatter != HairSettings{}.scatter) push("--scatter %.2f", f3(h.scatter));
   if (h.specular != HairSettings{}.specular) push("--specular %.2f", f3(h.specular));
   if (h.backlit != HairSettings{}.backlit) push("--backlit %.3f", f3(h.backlit));
