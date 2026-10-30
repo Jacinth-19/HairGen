@@ -285,6 +285,7 @@ void apply_params(Scene& s, const std::string& body) {
   if (json_number(body, "backlit", f)) s.hair.backlit = f;
   if (json_number(body, "stylise", f)) s.hair.stylise = f;
   if (json_number(body, "roughness", f)) s.hair.set_roughness(f);
+  if (json_bool(body, "oit", b)) s.hair.oit = b;
   if (json_number(body, "deepShadow", f)) s.hair.deep_shadow = f;
   if (json_number(body, "deepDensity", f)) s.hair.deep_density = f;
   if (json_number(body, "hairAO", f)) s.hair.hair_ao = f;

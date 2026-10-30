@@ -846,6 +846,11 @@ void UiPanel::draw_hair_window(Scene& scene, UiResult& result) {
     result.changed |= toggle("Head collision", &h.collide, "Push strands out of the head colliders.");
     result.changed |= toggle("Hair-mesh cage", &h.show_hairmesh, "Overlay the guide mesh.");
     result.changed |= toggle("Head casts shadow", &h.head_casts_shadow);
+    result.changed |= toggle("Order-independent transparency", &h.oit,
+                             "Weighted blended OIT: every strand on the pixel contributes to one\n"
+                             "accumulated colour, so a mass reads as deep as it is instead of as\n"
+                             "deep as its frontmost strand. Off falls back to the coverage-\n"
+                             "tested single layer.");
 
     // The fibre's absorption set. These are the demo's own material presets.
     ImGui::Spacing();
@@ -1357,6 +1362,7 @@ std::string UiPanel::cli_command(const Scene& scene) {
   if (h.stylise != HairSettings{}.stylise) push("--stylise %.2f", f3(h.stylise));
   if (h.material == 0) push("--material std_blond");
   if (h.render_mode == 0) push("--lines");
+  if (!h.oit) push("--no-oit");
   if (!h.collide) push("--no-collide");
   if (h.use_root_samples) push("--root-samples");
   if (h.show_hairmesh) push("--show-hairmesh");

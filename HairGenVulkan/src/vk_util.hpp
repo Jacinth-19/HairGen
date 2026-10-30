@@ -81,6 +81,19 @@ struct DescriptorBinding {
 VkDescriptorSetLayout create_descriptor_set_layout(Gpu& gpu,
                                                    const std::vector<DescriptorBinding>& bindings);
 
+// Per-attachment state for the multi-target passes (the scene pass has three
+// colour attachments: the HDR scene, the OIT accumulation and the OIT
+// revealage). `attachments` overrides the single-target blend fields above when
+// it is not empty; its size is the pipeline's colour attachment count.
+struct AttachmentState {
+  bool write = true;
+  bool blend = false;
+  VkBlendFactor src = VK_BLEND_FACTOR_SRC_ALPHA;
+  VkBlendFactor dst = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+  VkBlendFactor src_alpha = VK_BLEND_FACTOR_ONE;
+  VkBlendFactor dst_alpha = VK_BLEND_FACTOR_ZERO;
+};
+
 struct PipelineDesc {
   VkPipelineLayout layout = VK_NULL_HANDLE;
   VkRenderPass render_pass = VK_NULL_HANDLE;
@@ -101,6 +114,13 @@ struct PipelineDesc {
   bool alpha_to_coverage = false;
   VkBlendFactor src_color = VK_BLEND_FACTOR_SRC_ALPHA;
   VkBlendFactor dst_color = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+  std::vector<AttachmentState> attachments;   // empty -> one attachment above
+  // Fragment-stage specialisation constants (e.g. hair.frag's kAccumulate, which
+  // turns the strand colour into a WBOIT contribution without a second shader).
+  const VkSpecializationMapEntry* spec_entries = nullptr;
+  uint32_t spec_entry_count = 0;
+  const void* spec_data = nullptr;
+  size_t spec_data_size = 0;
   std::vector<VkVertexInputBindingDescription> vertex_bindings;
   std::vector<VkVertexInputAttributeDescription> vertex_attributes;
 };

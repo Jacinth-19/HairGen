@@ -40,7 +40,13 @@ layout(location = 5) flat in float vWMax;
 layout(location = 6) flat in int vInstance;
 layout(location = 7) in float vAlpha;
 
-layout(location = 0) out vec4 outColor;
+layout(location = 0) out vec4 outColor;   // scene HDR (alpha = MSAA coverage)
+
+// The order-independent path needs the fragment to hand back (colour * coverage,
+// coverage) instead of a colour plus a coverage mask. That is the only difference
+// between the two, so it is a specialisation constant - same shader, two variants,
+// no branch at run time and no duplicated 250 lines of shading.
+layout(constant_id = 0) const bool kAccumulate = false;
 
 // Root -> tip colour. `g < 1` is an ombre that ends on the tip colour; `g > 1`
 // is a dip dye whose band covers the last 1/g of the strand; `g == 0` is flat.
@@ -236,5 +242,24 @@ void main() {
   float tipFade = smoothstep(1.0, 0.985, vW / max(vWMax, 1e-4));
   float alpha = clamp(vAlpha, 0.0, 1.0) * tipFade;
   if (alpha <= 0.003) discard;
-  outColor = vec4(max(color, vec3(0.0)), alpha);
+  color = max(color, vec3(0.0));
+  // ---- order-independent compositing -------------------------------------
+  // The accumulation pass sums (colour * w) and w, and the resolve divides one by
+  // the other: a coverage-weighted mean over every strand on the pixel, in any
+  // order. Alpha is the fraction of the pixel the strand covers, so it is the
+  // weight - but on its own it would average the front of the mass and its depths
+  // into one flat tone. The extra factor biases towards the strands nearest the
+  // camera, normalised at the head so that the *average* of the weight over the
+  // mass still comes out at the coverage: the revealage stays a coverage measure
+  // while the front surface keeps its highlights (this is McGuire & Bavoil's
+  // depth weight, with the falloff referenced to the head instead of absolute).
+  if (kAccumulate) {
+    const float headDist = max(length((frame.mv * vec4(0.0, 0.0, 0.0, 1.0)).xyz), 0.05);
+    const float strandDist = max(length(vViewPos.xyz / max(vViewPos.w, 1e-4)), 0.05);
+    const float front = clamp(pow(headDist / strandDist, 3.0), 0.25, 4.0);
+    const float w = alpha * front;
+    outColor = vec4(color * w, w);
+  } else {
+    outColor = vec4(color, alpha);
+  }
 }

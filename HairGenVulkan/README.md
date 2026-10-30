@@ -272,6 +272,30 @@ gone:
   last 1.5 % of the strand instead of ending on a full-alpha quad. A 0.4-pixel
   strand is now 40 % transparent instead of a coin flip.
 
+**Order-independent transparency (close-ups).** A hair mass is hundreds of
+overlapping ribbons per pixel, and a depth-tested single layer can only ever show
+the frontmost one: at `--dist 2.6` that is hidden by the density, but frame the
+bust closely and the mass goes see-through, with the sky reading between strands
+that should be buried.
+
+The hair is therefore drawn into its own accumulation pass, additively, with no
+depth writes:
+`rgb = Σ colour · w` and `a = Σ w` - sums, so they do not depend on the order in
+which the rasteriser happened to emit the strands. The resolve (`shaders/oit_resolve.frag`)
+divides one by the other for the coverage-weighted mean colour and uses `1 - a`
+as the revealage of weighted blended OIT (McGuire & Bavoil 2013), then composites
+the result over the resolved opaque scene. `w = α · (d_head/d)³` is the strand's
+coverage times a front bias referenced to the head's distance, so the front
+surface keeps its highlights instead of averaging flat into its depths, while the
+mean weight over the mass stays a coverage measure.
+
+![order-independent transparency](media/oit_compare.jpg)
+
+Nothing is sorted, nothing is dithered and nothing is alpha-to-coverage dependent:
+a pixel crossed by forty strands ends up opaque no matter which of them was drawn
+last. `--no-oit` (or the *Order-independent transparency* toggle in the panel)
+returns to the coverage-tested single layer for comparison.
+
 **Lighting & shadows.** Three 1 k² maps per frame (object depth, hair depth for
 the transmittance model, and the hair density integral), image-based ambient
 from the sky table, sun disc, and an infinite ground plane that catches the
@@ -434,6 +458,8 @@ hairgen --out render.png [options]
                                        mass bounds absorption (default 0.65, 0 = off)
   --deep-density F                     scale of the measured hair density (1.0)
   --hair-ao F                          hair-mass AO from that density (0.5)
+  --oit 0|1, --no-oit                  order-independent hair transparency
+                                       (weighted blended OIT, on by default)
   --samples N --ssaa N                 MSAA (default 4) and supersampling (default 2)
   --clump F --clump-size F --curl F --curl-twists F --frizz F --kink F --fuzz F
   --density F --length-var F --hair-count N --segments N --width-px F
@@ -566,6 +592,7 @@ meson setup build --reconfigure -Dintegration_render=true && meson test -C build
 | `media/hero_1536.png` | 1536² hero render |
 | `media/contact_sheet.jpg` | 12-up overview (hero + dye palette + hairstyles) |
 | `media/dye_sheet.jpg` | the full dye palette on one sheet |
+| `media/oit_compare.jpg` | **order-independent hair**: coverage-tested (`--no-oit`) vs weighted blended OIT (default) on the same close-up - the mass reads as deep as it is instead of as deep as its frontmost strand |
 | `media/deep_shadow.jpg` | UE **Deep Shadow**, off vs 0.65: the absorption bound from the measured hair mass lifts the shaded fringe and the skin under it (2× crops below) |
 | `media/deep_shadow_maps.jpg` | the two new maps: the light-ray density integral, and the hair-mass AO derived from it |
 | `media/model_sheet.jpg` | Unreal's Hair shading model at the ends of each documented input (roughness, specular, scatter, backlit, physical vs stylised) |
@@ -675,7 +702,12 @@ Dear ImGui is vendored (docking branch, core only, no backends): `imgui.cpp`,
 hair shadow map (1024²) ────┐
 hair density integral (R16F)┤
 object shadow map (1024²) ──┼─> scene pass (4× MSAA, RGBA16F) ─> resolve
-sky LUT bake (256×128) ─────┘        │  sky · ground · head · hair
+sky LUT bake (256×128) ─────┘        │  sky · ground · bust · head
+                                     │
+hair accumulation pass (RGBA16F) ────┤  § strand colour × weight, summed
+                                     │
+         OIT resolve ────────────────┤  accum.rgb/accum.a over the scene
+                                     │
                                   ├─> bloom prefilter (¼ res)
                                   ├─> bloom blur ×2 separable
                                   └─> post: bloom add, exposure, ACES,

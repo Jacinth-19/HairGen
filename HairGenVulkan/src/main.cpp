@@ -68,6 +68,10 @@ void usage() {
       "  --stylise F           0 = plain physical result, 1 = the demo's extra lift /\n"
       "                        rim / sheen / saturation (default 0.45)\n"
       "\n"
+      "Transparency\n"
+      "  --oit 0|1             weighted blended OIT for the hair (default 1; 0 = one\n"
+      "                        coverage-tested layer per sample)\n"
+      "\n"
       "Deep shadow (Unreal's Deep Shadow, from a measured hair-density integral)\n"
       "  --deep-shadow F       bound absorption by the measured hair (default 0.65, 0 = off)\n"
       "  --deep-density F      scale of the measured hair density (default 1.0)\n"
@@ -341,6 +345,10 @@ int main(int argc, char** argv) {
     else if (match(a, "--deep-shadow")) scene.hair.deep_shadow = float(std::atof(next(a).c_str()));
     else if (match(a, "--deep-density")) scene.hair.deep_density = float(std::atof(next(a).c_str()));
     else if (match(a, "--hair-ao")) scene.hair.hair_ao = float(std::atof(next(a).c_str()));
+    // Hair transparency: weighted blended OIT (default) or the coverage-tested
+    // single layer.
+    else if (match(a, "--oit")) scene.hair.oit = std::atoi(next(a).c_str()) != 0;
+    else if (match(a, "--no-oit")) scene.hair.oit = false;
     else if (match(a, "--fill")) scene.hair.fill_light = float(std::atof(next(a).c_str()));
     else if (match(a, "--sheen")) scene.hair.sheen = float(std::atof(next(a).c_str()));
     else if (match(a, "--checker")) scene.sky.checker = float(std::atof(next(a).c_str()));

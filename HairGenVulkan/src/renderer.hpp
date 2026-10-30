@@ -61,6 +61,9 @@ class Renderer {
   void pass_shadows(VkCommandBuffer cmd);
   void pass_sky_lut(VkCommandBuffer cmd);
   void pass_scene(VkCommandBuffer cmd);
+  void pass_hair_accum(VkCommandBuffer cmd);
+  void draw_hair_ribbons(VkCommandBuffer cmd, bool lines);
+  void pass_oit(VkCommandBuffer cmd);
   void pass_bloom(VkCommandBuffer cmd);
   void pass_post(VkCommandBuffer cmd);
 
@@ -73,6 +76,9 @@ class Renderer {
 
   // textures
   Image sky_lut_, bloom1_, bloom2_, hdr_msaa_, hdr_resolve_, depth_msaa_, final_color_;
+  // Weighted blended OIT (hair): MSAA accumulation/revealage targets, their
+  // single-sample resolves, and the composited scene the post chain reads.
+  Image oit_accum_msaa_, oit_accum_, hdr_oit_;
   Image obj_shadow_, hair_shadow_, hair_density_, dummy_tex_, dummy_depth_;
   Image tex_hairmesh_, tex_uv_, tex_uw_, tex_v_, tex_noise_, tex_clump_;
   int dbg_id_ = 0;
@@ -96,17 +102,19 @@ class Renderer {
   VkRenderPass pass_density_ = VK_NULL_HANDLE;  // additive hair density integral
   VkRenderPass sky_lut_pass_ = VK_NULL_HANDLE;   // single sample HDR colour pass
   VkRenderPass scene_pass_ = VK_NULL_HANDLE;
+  VkRenderPass accum_pass_ = VK_NULL_HANDLE;
   VkRenderPass post_pass_ = VK_NULL_HANDLE;
   VkFramebuffer fb_obj_shadow_ = VK_NULL_HANDLE, fb_hair_shadow_ = VK_NULL_HANDLE,
                 fb_hair_density_ = VK_NULL_HANDLE;
   VkFramebuffer fb_sky_lut_ = VK_NULL_HANDLE, fb_bloom1_ = VK_NULL_HANDLE, fb_bloom2_ = VK_NULL_HANDLE;
-  VkFramebuffer fb_scene_ = VK_NULL_HANDLE, fb_post_ = VK_NULL_HANDLE;
+  VkFramebuffer fb_scene_ = VK_NULL_HANDLE, fb_accum_ = VK_NULL_HANDLE, fb_post_ = VK_NULL_HANDLE,
+                fb_oit_ = VK_NULL_HANDLE;
 
   // layouts
   VkDescriptorSetLayout dsl_frame_ = VK_NULL_HANDLE, dsl_hair_ = VK_NULL_HANDLE;
   VkDescriptorPool desc_pool_ = VK_NULL_HANDLE;
   VkDescriptorSet set_main_ = VK_NULL_HANDLE, set_sky_ = VK_NULL_HANDLE, set_blur_ = VK_NULL_HANDLE,
-                  set_shadow_ = VK_NULL_HANDLE;
+                  set_shadow_ = VK_NULL_HANDLE, set_oit_ = VK_NULL_HANDLE;
   VkDescriptorSet hair_set() const;
   VkPipelineLayout layout_scene_ = VK_NULL_HANDLE;
   VkPipelineLayout layout_full_ = VK_NULL_HANDLE;
@@ -120,6 +128,8 @@ class Renderer {
   VkPipeline p_hairmesh_curves_ = VK_NULL_HANDLE, p_hairmesh_rects_ = VK_NULL_HANDLE;
   VkPipeline p_obj_shadow_ = VK_NULL_HANDLE, p_hair_shadow_ = VK_NULL_HANDLE,
              p_hair_density_ = VK_NULL_HANDLE;
+  VkPipeline p_hair_oit_ = VK_NULL_HANDLE;   // the same hair, into the WBOIT targets
+  VkPipeline p_oit_ = VK_NULL_HANDLE;        // WBOIT resolve/composite
   VkPipeline p_prefilter_ = VK_NULL_HANDLE, p_blur_ = VK_NULL_HANDLE, p_post_ = VK_NULL_HANDLE;
   VkPipeline p_rain_ = VK_NULL_HANDLE;   // instanced procedural rain streaks
 

@@ -523,6 +523,14 @@ VkPipeline create_pipeline(Gpu& gpu, const PipelineDesc& desc) {
   stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
   stages[1].module = fs;
   stages[1].pName = "main";
+  VkSpecializationInfo spec_info{};
+  if (desc.spec_entries) {
+    spec_info.mapEntryCount = desc.spec_entry_count;
+    spec_info.pMapEntries = desc.spec_entries;
+    spec_info.dataSize = desc.spec_data_size;
+    spec_info.pData = desc.spec_data;
+    stages[1].pSpecializationInfo = &spec_info;
+  }
 
   VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
   vi.vertexBindingDescriptionCount = static_cast<uint32_t>(desc.vertex_bindings.size());
@@ -553,20 +561,43 @@ VkPipeline create_pipeline(Gpu& gpu, const PipelineDesc& desc) {
   ds.depthCompareOp = desc.depth_op;
 
   ms.alphaToCoverageEnable = desc.alpha_to_coverage ? VK_TRUE : VK_FALSE;
-  VkPipelineColorBlendAttachmentState att{};
-  att.blendEnable = desc.blend ? VK_TRUE : VK_FALSE;
-  att.srcColorBlendFactor = desc.src_color;
-  att.dstColorBlendFactor = desc.dst_color;
-  att.colorBlendOp = VK_BLEND_OP_ADD;
-  att.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-  att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-  att.alphaBlendOp = VK_BLEND_OP_ADD;
-  att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                       VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+  // One blend state per colour attachment; the multi-target passes (WBOIT) need
+  // a different rule per target, so `attachments` carries them explicitly.
+  std::vector<VkPipelineColorBlendAttachmentState> atts;
+  if (!desc.attachments.empty()) {
+    atts.resize(desc.attachments.size());
+    for (size_t i = 0; i < desc.attachments.size(); ++i) {
+      const AttachmentState& a = desc.attachments[i];
+      VkPipelineColorBlendAttachmentState& o = atts[i];
+      o = {};
+      o.blendEnable = a.blend ? VK_TRUE : VK_FALSE;
+      o.srcColorBlendFactor = a.src;
+      o.dstColorBlendFactor = a.dst;
+      o.srcAlphaBlendFactor = a.src_alpha;
+      o.dstAlphaBlendFactor = a.dst_alpha;
+      o.colorBlendOp = VK_BLEND_OP_ADD;
+      o.alphaBlendOp = VK_BLEND_OP_ADD;
+      o.colorWriteMask = a.write ? (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                    VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT)
+                                 : 0;
+    }
+  } else if (desc.color_attachments) {
+    VkPipelineColorBlendAttachmentState att{};
+    att.blendEnable = desc.blend ? VK_TRUE : VK_FALSE;
+    att.srcColorBlendFactor = desc.src_color;
+    att.dstColorBlendFactor = desc.dst_color;
+    att.colorBlendOp = VK_BLEND_OP_ADD;
+    att.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    att.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    att.alphaBlendOp = VK_BLEND_OP_ADD;
+    att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    atts.assign(desc.color_attachments, att);
+  }
 
   VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-  cb.attachmentCount = desc.color_attachments;
-  cb.pAttachments = desc.color_attachments ? &att : nullptr;
+  cb.attachmentCount = uint32_t(atts.size());
+  cb.pAttachments = atts.empty() ? nullptr : atts.data();
 
   VkDynamicState dyn_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
   VkPipelineDynamicStateCreateInfo dyn{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};

@@ -284,6 +284,184 @@ VkRenderPass make_color_pass(Gpu& gpu, VkFormat color_format, VkImageLayout fina
   return pass;
 }
 
+// The scene pass has three colour targets: the HDR scene, plus the two WBOIT
+// buffers (weighted colour accumulation and revealage). Every target resolves to
+// a single-sample image, so hair and geometry pay the same MSAA cost they always
+// did and the resolve is the hardware's.
+//
+//   attachment 0 .. 2  colour, MSAA
+//   attachment 3       depth
+//   attachment 4 .. 6  the single-sample resolves of 0 .. 2
+VkRenderPass make_scene_pass(Gpu& gpu, VkFormat color, VkSampleCountFlagBits samples,
+                             VkFormat depth_format, bool resolves) {
+  // 0 = HDR colour, 1 = depth (kept, the hair pass tests against it), 2 = resolve.
+  std::vector<VkAttachmentDescription> atts(2 + (resolves ? 1 : 0));
+  VkAttachmentDescription& c = atts[0];
+  c = {};
+  c.format = color;
+  c.samples = samples;
+  c.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  c.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  c.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  c.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  c.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  // With no resolve attachment the colour target is the image the next pass
+  // samples, so it has to end the pass in the layout it is sampled in.
+  c.finalLayout =
+      resolves ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  VkAttachmentDescription& d = atts[1];
+  d = {};
+  d.format = depth_format;
+  d.samples = samples;
+  d.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  d.storeOp = VK_ATTACHMENT_STORE_OP_STORE;   // the hair pass loads it
+  d.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  d.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  d.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  d.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  if (resolves) {
+    VkAttachmentDescription& r = atts[2];
+    r = {};
+    r.format = color;
+    r.samples = VK_SAMPLE_COUNT_1_BIT;
+    r.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    r.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    r.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    r.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    r.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    r.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  }
+
+  VkAttachmentReference color_ref{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+  VkAttachmentReference depth_ref{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+  VkAttachmentReference resolve_ref{2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+  VkSubpassDescription sub{};
+  sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  sub.colorAttachmentCount = 1;
+  sub.pColorAttachments = &color_ref;
+  sub.pResolveAttachments = resolves ? &resolve_ref : nullptr;
+  sub.pDepthStencilAttachment = &depth_ref;
+
+  VkSubpassDependency deps[2]{};
+  deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+  deps[0].dstSubpass = 0;
+  deps[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                         VK_PIPELINE_STAGE_TRANSFER_BIT;
+  deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+  deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                          VK_ACCESS_TRANSFER_WRITE_BIT;
+  deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  deps[1].srcSubpass = 0;
+  deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+  deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+  deps[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT |
+                         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+  deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT |
+                          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+
+  VkRenderPassCreateInfo ci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+  ci.attachmentCount = uint32_t(atts.size());
+  ci.pAttachments = atts.data();
+  ci.subpassCount = 1;
+  ci.pSubpasses = &sub;
+  ci.dependencyCount = 2;
+  ci.pDependencies = deps;
+  VkRenderPass pass = VK_NULL_HANDLE;
+  check(gpu.api.vkCreateRenderPass(gpu.device, &ci, nullptr, &pass), "vkCreateRenderPass(scene)");
+  return pass;
+}
+
+// The hair accumulation pass: one HDR colour target (rgb = sum of colour * weight,
+// a = sum of weight) plus the scene's depth, loaded and only tested against. It is
+// deliberately a separate pass with a single colour attachment - that is all
+// weighted blended OIT needs once the revealage is derived from the accumulated
+// weight, and it keeps the transparent geometry out of the opaque render pass.
+VkRenderPass make_accum_pass(Gpu& gpu, VkFormat color, VkSampleCountFlagBits samples,
+                             VkFormat depth_format, bool resolves) {
+  std::vector<VkAttachmentDescription> atts(2 + (resolves ? 1 : 0));
+  VkAttachmentDescription& c = atts[0];
+  c = {};
+  c.format = color;
+  c.samples = samples;
+  c.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  c.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  c.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  c.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  c.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  // With no resolve attachment the colour target is the image the next pass
+  // samples, so it has to end the pass in the layout it is sampled in.
+  c.finalLayout =
+      resolves ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  VkAttachmentDescription& d = atts[1];
+  d = {};
+  d.format = depth_format;
+  d.samples = samples;
+  d.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;      // the opaque scene's depth
+  d.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  d.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  d.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  d.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  d.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  if (resolves) {
+    VkAttachmentDescription& r = atts[2];
+    r = {};
+    r.format = color;
+    r.samples = VK_SAMPLE_COUNT_1_BIT;
+    r.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    r.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    r.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    r.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    r.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    r.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  }
+
+  VkAttachmentReference color_ref{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+  VkAttachmentReference depth_ref{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+  VkAttachmentReference resolve_ref{2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+  VkSubpassDescription sub{};
+  sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  sub.colorAttachmentCount = 1;
+  sub.pColorAttachments = &color_ref;
+  sub.pResolveAttachments = resolves ? &resolve_ref : nullptr;
+  sub.pDepthStencilAttachment = &depth_ref;
+
+  VkSubpassDependency deps[2]{};
+  deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+  deps[0].dstSubpass = 0;
+  deps[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                         VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+  deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+  deps[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+  deps[1].srcSubpass = 0;
+  deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+  deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  deps[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+  VkRenderPassCreateInfo ci{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+  ci.attachmentCount = uint32_t(atts.size());
+  ci.pAttachments = atts.data();
+  ci.subpassCount = 1;
+  ci.pSubpasses = &sub;
+  ci.dependencyCount = 2;
+  ci.pDependencies = deps;
+  VkRenderPass pass = VK_NULL_HANDLE;
+  check(gpu.api.vkCreateRenderPass(gpu.device, &ci, nullptr, &pass), "vkCreateRenderPass(hair-accum)");
+  return pass;
+}
+
 VkFramebuffer make_framebuffer(Gpu& gpu, VkRenderPass pass, const std::vector<VkImageView>& views,
                                uint32_t w, uint32_t h) {
   VkFramebufferCreateInfo ci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
@@ -554,6 +732,7 @@ Renderer::~Renderer() {
   destroy_pipeline(p_prefilter_);
   destroy_pipeline(p_blur_);
   destroy_pipeline(p_post_);
+  destroy_pipeline(p_oit_);
   destroy_pipeline(p_rain_);
   auto destroy_fb = [&](VkFramebuffer& f) {
     if (f) gpu_.api.vkDestroyFramebuffer(gpu_.device, f, nullptr);
@@ -566,8 +745,12 @@ Renderer::~Renderer() {
   destroy_fb(fb_bloom1_);
   destroy_fb(fb_bloom2_);
   destroy_fb(fb_scene_);
+  destroy_fb(fb_accum_);
+  destroy_fb(fb_oit_);
   if (pass_depth_) gpu_.api.vkDestroyRenderPass(gpu_.device, pass_depth_, nullptr);
+  if (accum_pass_) gpu_.api.vkDestroyRenderPass(gpu_.device, accum_pass_, nullptr);
   for (auto* img : {&sky_lut_, &bloom1_, &bloom2_, &hdr_msaa_, &hdr_resolve_, &depth_msaa_, &final_color_,
+                    &oit_accum_msaa_, &oit_accum_, &hdr_oit_,
                     &obj_shadow_, &hair_shadow_, &hair_density_, &dummy_tex_, &dummy_depth_, &tex_hairmesh_, &tex_uv_, &tex_uw_, &tex_v_,
                     &tex_noise_, &tex_clump_, &tex_skin_, &tex_skin_flat_, &tex_skin_nrm_, &tex_skin_ao_,
                     &tex_skin_spec_})
@@ -611,6 +794,17 @@ void Renderer::create_targets() {
   bloom2_ = gpu_.create_image_2d(bloom_w, bloom_h, hdr,
                                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
   hdr_msaa_ = gpu_.create_image_2d(width_, height_, hdr, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, samples_);
+  // WBOIT: the hair is transparent, so a depth-tested single layer per sample
+  // loses every strand behind the front one - which is why the mass went
+  // see-through as soon as the camera came close. Both targets are MSAA like the
+  // scene (the hardware resolve averages them, which is linear and correct for
+  // the accumulation; the coverage mask keeps the strand tips soft).
+  oit_accum_msaa_ = gpu_.create_image_2d(width_, height_, hdr,
+                                         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, samples_);
+  oit_accum_ = gpu_.create_image_2d(width_, height_, hdr,
+                                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+  hdr_oit_ = gpu_.create_image_2d(width_, height_, hdr,
+                                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
   hdr_resolve_ = gpu_.create_image_2d(width_, height_, hdr,
                                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
   depth_msaa_ = gpu_.create_image_2d(width_, height_, VK_FORMAT_D32_SFLOAT,
@@ -618,6 +812,8 @@ void Renderer::create_targets() {
   final_color_ = gpu_.create_image_2d(width_, height_, VK_FORMAT_R8G8B8A8_UNORM,
                                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
   hdr_resolve_.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  hdr_oit_.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  oit_accum_.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   bloom1_.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   bloom2_.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   sky_lut_.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -657,10 +853,22 @@ void Renderer::create_targets() {
   fb_bloom2_ = make_framebuffer(gpu_, pass_color_hdr, {bloom2_.view}, bloom_w, bloom_h);
   sky_lut_pass_ = pass_color_hdr;
 
-  scene_pass_ = make_color_pass(gpu_, hdr, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, samples_,
-                                VK_FORMAT_D32_SFLOAT, hdr);
-  fb_scene_ = make_framebuffer(gpu_, scene_pass_, {hdr_msaa_.view, depth_msaa_.view, hdr_resolve_.view},
-                               width_, height_);
+  const bool scene_resolves = samples_ != VK_SAMPLE_COUNT_1_BIT;
+  scene_pass_ = make_scene_pass(gpu_, hdr, samples_, VK_FORMAT_D32_SFLOAT, scene_resolves);
+  accum_pass_ = make_accum_pass(gpu_, hdr, samples_, VK_FORMAT_D32_SFLOAT, scene_resolves);
+  if (scene_resolves) {
+    fb_scene_ = make_framebuffer(gpu_, scene_pass_, {hdr_msaa_.view, depth_msaa_.view, hdr_resolve_.view},
+                                 width_, height_);
+    fb_accum_ = make_framebuffer(gpu_, accum_pass_,
+                                 {oit_accum_msaa_.view, depth_msaa_.view, oit_accum_.view}, width_,
+                                 height_);
+  } else {
+    fb_scene_ = make_framebuffer(gpu_, scene_pass_, {hdr_resolve_.view, depth_msaa_.view}, width_,
+                                 height_);
+    fb_accum_ = make_framebuffer(gpu_, accum_pass_, {oit_accum_.view, depth_msaa_.view}, width_,
+                                 height_);
+  }
+  fb_oit_ = make_framebuffer(gpu_, pass_color_hdr, {hdr_oit_.view}, width_, height_);
   post_pass_ = make_color_pass(gpu_, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_UNDEFINED, VK_FORMAT_UNDEFINED);
   fb_post_ = make_framebuffer(gpu_, post_pass_, {final_color_.view}, width_, height_);
@@ -682,6 +890,8 @@ void Renderer::create_targets() {
                                   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
   };
   barrier(hdr_resolve_, VK_IMAGE_ASPECT_COLOR_BIT);
+  barrier(hdr_oit_, VK_IMAGE_ASPECT_COLOR_BIT);
+  barrier(oit_accum_, VK_IMAGE_ASPECT_COLOR_BIT);
   barrier(bloom1_, VK_IMAGE_ASPECT_COLOR_BIT);
   barrier(bloom2_, VK_IMAGE_ASPECT_COLOR_BIT);
   barrier(sky_lut_, VK_IMAGE_ASPECT_COLOR_BIT);
@@ -872,6 +1082,19 @@ void Renderer::create_pipelines() {
   PipelineDesc d;
   d.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
+  // Vulkan wants every pipeline to declare all of the subpass's colour targets,
+  // so scene pipelines carry three states even though only the hair OIT pipeline
+  // writes the extra two. Blending on attachment 0 for opaque geometry is off.
+  // Opaque drawers write the scene target and nothing else: one blend state per
+  // colour attachment in the scene pass (0 = scene, 1 = WBOIT accumulation). The
+  // alpha channel carries the revealage, so it is written along with the colour.
+  std::vector<AttachmentState> scene_color = {
+      {true, false, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE,
+       VK_BLEND_FACTOR_ZERO},
+      {false, false, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE,
+       VK_BLEND_FACTOR_ZERO},
+  };
+
   // sky table
   {
     PipelineDesc p = d;
@@ -891,6 +1114,7 @@ void Renderer::create_pipelines() {
     PipelineDesc p = d;
     p.layout = layout_full_;
     p.render_pass = scene_pass_;
+    p.attachments = scene_color;
     p.sample_count = samples_;
     p.vert_spv = reinterpret_cast<const char*>(shader("fullscreen.vert")->data);
     p.vert_size = shader("fullscreen.vert")->size;
@@ -905,6 +1129,7 @@ void Renderer::create_pipelines() {
     PipelineDesc p = d;
     p.layout = layout_scene_;
     p.render_pass = scene_pass_;
+    p.attachments = scene_color;
     p.sample_count = samples_;
     p.vert_spv = reinterpret_cast<const char*>(shader("fullscreen.vert")->data);
     p.vert_size = shader("fullscreen.vert")->size;
@@ -919,6 +1144,7 @@ void Renderer::create_pipelines() {
     PipelineDesc p = d;
     p.layout = layout_scene_;
     p.render_pass = scene_pass_;
+    p.attachments = scene_color;
     p.sample_count = samples_;
     p.vert_spv = reinterpret_cast<const char*>(shader("head.vert")->data);
     p.vert_size = shader("head.vert")->size;
@@ -949,6 +1175,7 @@ void Renderer::create_pipelines() {
     PipelineDesc p = d;
     p.layout = layout_scene_;
     p.render_pass = scene_pass_;
+    p.attachments = scene_color;
     p.sample_count = samples_;
     p.vert_spv = reinterpret_cast<const char*>(shader("head.vert")->data);
     p.vert_size = shader("head.vert")->size;
@@ -974,6 +1201,7 @@ void Renderer::create_pipelines() {
     PipelineDesc p = d;
     p.layout = layout_scene_;
     p.render_pass = scene_pass_;
+    p.attachments = scene_color;
     p.sample_count = samples_;
     p.vert_spv = reinterpret_cast<const char*>(shader("hair.vert")->data);
     p.vert_size = shader("hair.vert")->size;
@@ -988,6 +1216,52 @@ void Renderer::create_pipelines() {
     // tapered strand tips resolve softly without transparency sorting.
     p.alpha_to_coverage = true;
     p_hair_ = create_pipeline(gpu_, p);
+  }
+  // The same hair in the order-independent accumulation pass: one target that
+  // sums (colour * coverage, coverage). Every strand on the pixel contributes, so
+  // the mass reads as deep as it is instead of as deep as its frontmost layer.
+  // Depth writes stay off (all strands must land in the sum) but the depth *test*
+  // stays on, against the opaque scene's depth buffer.
+  {
+    PipelineDesc p = d;
+    p.layout = layout_scene_;
+    p.render_pass = accum_pass_;
+    p.attachments = {{true, true, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE,
+                      VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE}};
+    p.sample_count = samples_;
+    p.vert_spv = reinterpret_cast<const char*>(shader("hair.vert")->data);
+    p.vert_size = shader("hair.vert")->size;
+    p.frag_spv = reinterpret_cast<const char*>(shader("hair.frag")->data);
+    p.frag_size = shader("hair.frag")->size;
+    p.vertex_bindings = hair_bindings_;
+    p.vertex_attributes = hair_attrs_;
+    p.cull = VK_CULL_MODE_NONE;
+    p.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+    // No alpha-to-coverage here: the coverage *is* the weight, so it has to reach
+    // the accumulation as a value rather than as a reduced sample mask.
+    p.alpha_to_coverage = false;
+    p.depth_write = false;
+    static const VkSpecializationMapEntry kAccumEntry{0, 0, sizeof(VkBool32)};
+    static const VkBool32 kAccumOn = VK_TRUE;
+    p.spec_entries = &kAccumEntry;
+    p.spec_entry_count = 1;
+    p.spec_data = &kAccumOn;
+    p.spec_data_size = sizeof(kAccumOn);
+    p_hair_oit_ = create_pipeline(gpu_, p);
+  }
+  // WBOIT resolve: weighted colour back to radiance, composited over the opaque
+  // scene with the revealage as the blend factor.
+  {
+    PipelineDesc p = d;
+    p.layout = layout_full_;
+    p.render_pass = sky_lut_pass_;   // one single-sample HDR colour target
+    p.vert_spv = reinterpret_cast<const char*>(shader("fullscreen.vert")->data);
+    p.vert_size = shader("fullscreen.vert")->size;
+    p.frag_spv = reinterpret_cast<const char*>(shader("oit_resolve.frag")->data);
+    p.frag_size = shader("oit_resolve.frag")->size;
+    p.depth_test = false;
+    p.depth_write = false;
+    p_oit_ = create_pipeline(gpu_, p);
   }
   // The hair density integral along each light ray: the same hair geometry
   // rasterised with no depth test and additive blending, so every covered
@@ -1047,6 +1321,7 @@ void Renderer::create_pipelines() {
     PipelineDesc p = d;
     p.layout = layout_scene_;
     p.render_pass = scene_pass_;
+    p.attachments = scene_color;
     p.sample_count = samples_;
     p.vert_spv = reinterpret_cast<const char*>(shader("hair.vert")->data);
     p.vert_size = shader("hair.vert")->size;
@@ -1063,6 +1338,7 @@ void Renderer::create_pipelines() {
     PipelineDesc p = d;
     p.layout = layout_full_;  // positions are already in world space
     p.render_pass = scene_pass_;
+    p.attachments = scene_color;
     p.sample_count = samples_;
     p.vert_spv = reinterpret_cast<const char*>(shader("hairmesh.vert")->data);
     p.vert_size = shader("hairmesh.vert")->size;
@@ -1084,6 +1360,7 @@ void Renderer::create_pipelines() {
     PipelineDesc p = d;
     p.layout = layout_full_;
     p.render_pass = scene_pass_;
+    p.attachments = scene_color;
     p.sample_count = samples_;
     p.vert_spv = reinterpret_cast<const char*>(shader("rain.vert")->data);
     p.vert_size = shader("rain.vert")->size;
@@ -1093,7 +1370,8 @@ void Renderer::create_pipelines() {
     p.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     p.depth_test = true;
     p.depth_write = false;
-    p.blend = true;    // additive-ish alpha: streaks are translucent water
+    p.attachments[0] = {true, true, VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                        VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO};  // translucent water
     p_rain_ = create_pipeline(gpu_, p);
   }
 
@@ -1143,6 +1421,10 @@ void Renderer::create_descriptors() {
       {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
       // hair density along the light ray (see shaders/hair_density.frag)
       {10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
+      // WBOIT accumulation (rgb = colour * weight, a = weight). The revealage
+      // rides in the alpha of the scene target itself, which is what McGuire &
+      // Bavoil do too - so there is only one extra attachment, not two.
+      {11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT},
   };
   dsl_frame_ = create_descriptor_set_layout(gpu_, frame_bindings);
 
@@ -1160,26 +1442,27 @@ void Renderer::create_descriptors() {
   sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
   sizes[0].descriptorCount = 4;
   sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  sizes[1].descriptorCount = uint32_t(4 * 11 + materials_.size() * 13);
+  sizes[1].descriptorCount = uint32_t(5 * 13 + materials_.size() * 13);
   sizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   sizes[2].descriptorCount = uint32_t(materials_.size() * 2);
   VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  pci.maxSets = uint32_t(5 + materials_.size());
+  pci.maxSets = uint32_t(6 + materials_.size());
   pci.poolSizeCount = 3;
   pci.pPoolSizes = sizes;
   check(gpu_.api.vkCreateDescriptorPool(gpu_.device, &pci, nullptr, &desc_pool_), "vkCreateDescriptorPool");
 
   VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
   ai.descriptorPool = desc_pool_;
-  ai.descriptorSetCount = 4;
-  std::vector<VkDescriptorSetLayout> frame_layouts(4, dsl_frame_);
+  ai.descriptorSetCount = 5;
+  std::vector<VkDescriptorSetLayout> frame_layouts(5, dsl_frame_);
   ai.pSetLayouts = frame_layouts.data();
-  VkDescriptorSet sets[4]{};
+  VkDescriptorSet sets[5]{};
   check(gpu_.api.vkAllocateDescriptorSets(gpu_.device, &ai, sets), "vkAllocateDescriptorSets");
   set_main_ = sets[0];
   set_sky_ = sets[1];
   set_blur_ = sets[2];
   set_shadow_ = sets[3];
+  set_oit_ = sets[4];   // hdr_resolve_ as the base, plus the two WBOIT buffers
 
   ai.descriptorSetCount = 1;
   ai.pSetLayouts = &dsl_hair_;
@@ -1187,25 +1470,36 @@ void Renderer::create_descriptors() {
     check(gpu_.api.vkAllocateDescriptorSets(gpu_.device, &ai, &m.set), "vkAllocateDescriptorSets");
 
   auto frame_set = [&](VkDescriptorSet set, const Image& obj_shad, const Image& hair_shad,
-                       const Image& hair_density, const Image& sky, const Image& bloom) {
+                       const Image& hair_density, const Image& sky, const Image& bloom,
+                       const Image& scene_hdr, const Image& oit_accum) {
     write_descriptors(gpu_, {
         {set, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_NULL_HANDLE, VK_NULL_HANDLE, ubo_.buffer, 0, sizeof(FrameUbo)},
         {set, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, obj_shad.view, samp_shadow_, VK_NULL_HANDLE, 0, 0},
         {set, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, hair_shad.view, samp_hairdepth_, VK_NULL_HANDLE, 0, 0},
         {set, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sky.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
         {set, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, bloom.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
-        {set, 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, hdr_resolve_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+        {set, 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, scene_hdr.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
         {set, 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_skin_flat_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
         {set, 7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_skin_nrm_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
         {set, 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_skin_ao_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
         {set, 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, tex_skin_spec_.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
         {set, 10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, hair_density.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
+        {set, 11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, oit_accum.view, samp_linear_, VK_NULL_HANDLE, 0, 0},
     });
   };
-  frame_set(set_main_, obj_shadow_, hair_shadow_, hair_density_, sky_lut_, bloom1_);
-  frame_set(set_sky_, obj_shadow_, hair_shadow_, hair_density_, dummy_tex_, bloom1_);
-  frame_set(set_blur_, obj_shadow_, hair_shadow_, hair_density_, sky_lut_, bloom2_);
-  frame_set(set_shadow_, dummy_depth_, dummy_depth_, dummy_depth_, sky_lut_, bloom1_);
+  // Post and bloom read the *composited* scene (hdr_oit_), not the raw resolve:
+  // the hair lives in the WBOIT buffers until pass_oit puts it together.
+  frame_set(set_main_, obj_shadow_, hair_shadow_, hair_density_, sky_lut_, bloom1_, hdr_oit_,
+            oit_accum_);
+  frame_set(set_sky_, obj_shadow_, hair_shadow_, hair_density_, dummy_tex_, bloom1_, hdr_oit_,
+            oit_accum_);
+  frame_set(set_blur_, obj_shadow_, hair_shadow_, hair_density_, sky_lut_, bloom2_, hdr_oit_,
+            oit_accum_);
+  frame_set(set_shadow_, dummy_depth_, dummy_depth_, dummy_depth_, sky_lut_, bloom1_, hdr_oit_,
+            oit_accum_);
+  // The resolve reads the raw scene as its background.
+  frame_set(set_oit_, obj_shadow_, hair_shadow_, hair_density_, sky_lut_, bloom1_, hdr_resolve_,
+            oit_accum_);
 
   // Each material set is identical except for the six Marschner tables.
   for (MaterialSet& m : materials_) {
@@ -1485,6 +1779,8 @@ void Renderer::pass_sky_lut(VkCommandBuffer cmd) {
 }
 
 void Renderer::pass_scene(VkCommandBuffer cmd) {
+  // One HDR colour target and depth. The transparent hair is not part of this
+  // pass any more - it accumulates afterwards, order-independently.
   VkClearValue clears[2]{};
   clears[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
   clears[1].depthStencil = {1.0f, 0};
@@ -1536,32 +1832,19 @@ void Renderer::pass_scene(VkCommandBuffer cmd) {
     gpu_.api.vkCmdDrawIndexed(cmd, head_index_count_, 1, 0, 0, 0);
   }
 
-  // hair
+  // hair (only the paths that are not order-independent: debug lines, or the
+  // whole coverage-tested path when --no-oit asks for it)
   if (scene_.hair.show_hair && hair_vert_count_ && !skip_pass("hairdraw")) {
-    gpu_.api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p_hair_);
-    gpu_.api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_scene_, 0, 2, sets, 0, nullptr);
-    VkDeviceSize offset = 0;
     const bool lines = scene_.hair.render_mode == 0;
-    if (lines) {
-      gpu_.api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p_hair_lines_);
-      gpu_.api.vkCmdBindVertexBuffers(cmd, 0, 1, &hair_line_vb_.buffer, &offset);
-    } else {
-      gpu_.api.vkCmdBindVertexBuffers(cmd, 0, 1, &hair_vb_.buffer, &offset);
-    }
-    const uint32_t verts = lines ? hair_line_vert_count_ : hair_vert_count_;
-    float width = scene_.hair.width_px / float(width_);
-    for (uint32_t b = 0; b < bundle_count_; ++b) {
-      float pc[8] = {bundle_st_[b * 2],
-                     bundle_st_[b * 2 + 1],
-                     width,
-                     0.0f,
-                     float(root_base_for_bundle(b)),
-                     scene_.hair.use_root_samples ? 1.0f : 0.0f,
-                     scene_.hair.collide ? 1.0f : 0.0f,
-                     float(roots_per_bundle(b))};
-      gpu_.api.vkCmdPushConstants(cmd, layout_scene_,
-                                  VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
-      gpu_.api.vkCmdDraw(cmd, verts, strands_for_bundle(b), 0, 0);
+    const bool oit = scene_.hair.oit && !lines;
+    if (!oit) {
+      gpu_.api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, lines ? p_hair_lines_ : p_hair_);
+      gpu_.api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_scene_, 0, 2, sets, 0,
+                                       nullptr);
+      VkDeviceSize offset = 0;
+      gpu_.api.vkCmdBindVertexBuffers(cmd, 0, 1,
+                                      lines ? &hair_line_vb_.buffer : &hair_vb_.buffer, &offset);
+      draw_hair_ribbons(cmd, lines);
     }
   }
 
@@ -1590,6 +1873,87 @@ void Renderer::pass_scene(VkCommandBuffer cmd) {
     gpu_.api.vkCmdDraw(cmd, 6, uint32_t(count), 0, 0);
   }
 
+  gpu_.api.vkCmdEndRenderPass(cmd);
+}
+
+// One draw per bundle: the push constant carries the bundle's strand parameters
+// and the ribbon width in NDC, exactly like the demo's per-bundle loop.
+void Renderer::draw_hair_ribbons(VkCommandBuffer cmd, bool lines) {
+  const uint32_t verts = lines ? hair_line_vert_count_ : hair_vert_count_;
+  const float width = scene_.hair.width_px / float(width_);
+  for (uint32_t b = 0; b < bundle_count_; ++b) {
+    float pc[8] = {bundle_st_[b * 2],
+                   bundle_st_[b * 2 + 1],
+                   width,
+                   0.0f,
+                   float(root_base_for_bundle(b)),
+                   scene_.hair.use_root_samples ? 1.0f : 0.0f,
+                   scene_.hair.collide ? 1.0f : 0.0f,
+                   float(roots_per_bundle(b))};
+    gpu_.api.vkCmdPushConstants(cmd, layout_scene_,
+                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32, pc);
+    gpu_.api.vkCmdDraw(cmd, verts, strands_for_bundle(b), 0, 0);
+  }
+}
+
+// The order-independent hair pass. Both the colour *and* the coverage go into one
+// HDR target as (colour * coverage, coverage); the resolve divides one by the
+// other. Nothing is sorted, nothing is dithered, and every strand in the volume
+// contributes, which is the whole point of doing it this way for close-ups: the
+// coverage-tested path can only ever show the frontmost strand per sample, so a
+// mass that is eight strands deep reads exactly as thick as one strand.
+void Renderer::pass_hair_accum(VkCommandBuffer cmd) {
+  if (!scene_.hair.oit || scene_.hair.render_mode == 0) return;
+  if (!scene_.hair.show_hair || !hair_vert_count_) return;
+  if (skip_pass("hairdraw")) return;
+  VkClearValue clear{};
+  clear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+  VkRenderPassBeginInfo bi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+  bi.renderPass = accum_pass_;
+  bi.framebuffer = fb_accum_;
+  bi.renderArea = {{0, 0}, {uint32_t(width_), uint32_t(height_)}};
+  bi.clearValueCount = 1;
+  bi.pClearValues = &clear;
+  gpu_.api.vkCmdBeginRenderPass(cmd, &bi, VK_SUBPASS_CONTENTS_INLINE);
+  VkViewport vp{0, 0, float(width_), float(height_), 0.0f, 1.0f};
+  VkRect2D sc{{0, 0}, {uint32_t(width_), uint32_t(height_)}};
+  gpu_.api.vkCmdSetViewport(cmd, 0, 1, &vp);
+  gpu_.api.vkCmdSetScissor(cmd, 0, 1, &sc);
+  VkDescriptorSet sets[2] = {set_main_, hair_set()};
+  gpu_.api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p_hair_oit_);
+  gpu_.api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_scene_, 0, 2, sets, 0,
+                                   nullptr);
+  VkDeviceSize offset = 0;
+  gpu_.api.vkCmdBindVertexBuffers(cmd, 0, 1, &hair_vb_.buffer, &offset);
+  draw_hair_ribbons(cmd, false);
+  gpu_.api.vkCmdEndRenderPass(cmd);
+}
+
+void Renderer::pass_oit(VkCommandBuffer cmd) {
+  // Weighted blended OIT resolve (McGuire & Bavoil): the accumulated colour is
+  // divided by its own weight and composited over the opaque scene, with the
+  // revealage - the product of (1 - coverage) of every strand that covered the
+  // sample - as the blend factor. This is what turns "the frontmost strand per
+  // sample" into "the whole mass", and it is order independent by construction,
+  // so close-ups no longer depend on which strand the rasteriser happened to
+  // draw last.
+  VkClearValue clear{};
+  clear.color = {{0, 0, 0, 1}};
+  VkRenderPassBeginInfo bi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+  bi.renderPass = sky_lut_pass_;
+  bi.framebuffer = fb_oit_;
+  bi.renderArea = {{0, 0}, {uint32_t(width_), uint32_t(height_)}};
+  bi.clearValueCount = 1;
+  bi.pClearValues = &clear;
+  gpu_.api.vkCmdBeginRenderPass(cmd, &bi, VK_SUBPASS_CONTENTS_INLINE);
+  VkViewport vp{0, 0, float(width_), float(height_), 0.0f, 1.0f};
+  VkRect2D sc{{0, 0}, {uint32_t(width_), uint32_t(height_)}};
+  gpu_.api.vkCmdSetViewport(cmd, 0, 1, &vp);
+  gpu_.api.vkCmdSetScissor(cmd, 0, 1, &sc);
+  gpu_.api.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p_oit_);
+  gpu_.api.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_full_, 0, 1, &set_oit_, 0,
+                                   nullptr);
+  gpu_.api.vkCmdDraw(cmd, 3, 1, 0, 0);
   gpu_.api.vkCmdEndRenderPass(cmd);
 }
 
@@ -1674,6 +2038,8 @@ RenderStats Renderer::render(double time_seconds, uint32_t frame_index) {
   if (!skip_pass("shadowpass")) pass_shadows(cmd_);
   if (!skip_pass("skypass")) pass_sky_lut(cmd_);
   if (!skip_pass("scenepass")) pass_scene(cmd_);
+  pass_hair_accum(cmd_);
+  if (!skip_pass("oitpass")) pass_oit(cmd_);
   if (!skip_pass("bloompass")) pass_bloom(cmd_);
   if (!skip_pass("postpass")) pass_post(cmd_);
 

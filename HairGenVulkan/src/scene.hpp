@@ -116,6 +116,12 @@ struct HairSettings {
   // without bound as the shaded point gets deeper. The density is measured by an
   // extra additive pass in light space (shaders/hair_density.frag, the 2D
   // stand-in for the voxel volume): `deep_shadow` blends that bound into the
+  // Weighted blended OIT for the ribbons (see pass_hair_accum / pass_oit): every
+  // strand behind the front one keeps contributing, so a mass stays opaque in
+  // close-ups instead of collapsing to one layer per pixel. Off restores the
+  // coverage-tested path.
+  bool oit = true;
+
   // transmittance (0 = the demo's single-layer Beer-Lambert), `deep_density`
   // scales the measured density, and `hair_ao` uses the same density to occlude
   // ambient light inside the mass.
