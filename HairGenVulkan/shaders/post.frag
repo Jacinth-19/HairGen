@@ -83,9 +83,11 @@ void main() {
   float vig = 1.0 - pc.p.z * dot(d, d) * 1.6;
   hdr *= clamp(vig, 0.0, 1.0);
 
-  vec3 mapped = tonemapACES(hdr);
+  // The fitted ACES curve replaces the Narkowicz fit: it is the one that keeps
+  // the chroma of dyed hair in the highlights instead of rolling it to white.
+  vec3 mapped = tonemapACESFitted(hdr);
   // Gentle contrast curve keeps the hair detail readable after the filmic knee.
-  mapped = mix(mapped, mapped * mapped * (3.0 - 2.0 * mapped), 0.22);
+  mapped = mix(mapped, mapped * mapped * (3.0 - 2.0 * mapped), 0.16);
 
   // Grade: a little more saturation, cool shadows and warm highlights. This is
   // what gives the straw-coloured render its colour separation.
@@ -97,6 +99,9 @@ void main() {
 
   mapped = linearToSRGB(clamp(mapped, 0.0, 1.0));
 
-  float dither = (hash(vUV * frame.resolution.xy + pc.p.w) - 0.5) / 255.0;
+  // Triangular noise instead of uniform: it removes the 8-bit banding in the sky
+  // gradient with half the amplitude, so it costs less perceived grain.
+  vec2 px = vUV * frame.resolution.xy + pc.p.w;
+  float dither = (hash(px) + hash(px + 17.31) - 1.0) / 255.0;
   outColor = vec4(mapped + dither, 1.0);
 }

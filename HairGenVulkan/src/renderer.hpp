@@ -141,6 +141,9 @@ class Renderer {
   uint32_t hair_segments_ = 0;
   uint32_t hair_vert_count_ = 0;
   uint32_t bundle_count_ = 0;
+  // The settings the current strand geometry was built from (see set_scene).
+  int built_hair_count_ = -1;
+  int built_segments_ = -1;
   std::vector<float> bundle_st_;  // xy per bundle
 
   VkCommandBuffer cmd_ = VK_NULL_HANDLE;

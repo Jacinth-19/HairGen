@@ -1,4 +1,4 @@
-// head.frag - skin shading X (edit test): wrapped diffuse + GGX specular picking up the hair
+// head.frag - skin shading: wrapped diffuse + GGX specular picking up the hair
 // transmittance shadow, plus sky ambient and a little subsurface tint.
 #version 450
 
@@ -44,7 +44,13 @@ void main() {
   if (vUV.y < 0.05) { duvdx.y = -duvdx.y; duvdy.y = -duvdy.y; }
   // Feature gates: 15 = no normal map, 16 = no AO, 17 = no spec mask.
   bool noNrm = frame.misc.z > 14.5 && frame.misc.z < 15.5;
-  vec3 n = normalize(vNormal);
+  // A zero-length interpolated normal normalises to NaN, and a NaN normal shades
+  // as an unlit black wedge with hard edges - one of the defects on this scan.
+  // Test the raw length *before* normalising (checking dot(n,n) afterwards can
+  // never fire, because NaN compares false) and fall back to the geometric
+  // facing normal of the triangle.
+  vec3 rawN = vNormal;
+  vec3 n = dot(rawN, rawN) > 1e-12 ? normalize(rawN) : normalize(cross(dFdx(vWorld), dFdy(vWorld)));
   if (!noNrm) {
     vec3 dpdx = dFdx(vWorld), dpdy = dFdy(vWorld);
     float det = duvdx.x * duvdy.y - duvdx.y * duvdy.x;
@@ -74,7 +80,7 @@ void main() {
   // Safety net: a zero-length interpolated normal normalises to NaN, which
   // renders as an unlit black patch with hard edges. Fall back to the geometric
   // facing normal of the triangle instead.
-  if (dot(n, n) < 1e-8) n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
+  if (!(dot(n, n) > 1e-8)) n = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
   if (dot(n, w_o) < 0.0) n = -n;
   // The bust is a fan of overlapping sheets: whichever sheet wins the depth test
   // brings its own normal, and at sheet boundaries that shows up as patchwork.

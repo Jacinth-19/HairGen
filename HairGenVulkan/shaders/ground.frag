@@ -31,6 +31,34 @@ float groundAlbedo(vec2 xz) {
   return 0.085 + 0.030 * n + 0.015 * n2;
 }
 
+// ---------------------------------------------------------------------------
+// Checkerboard.
+//
+// The classic studio floor: it gives the eye a scale reference under the bust
+// and makes the shadow read as a shadow instead of a smudge. It is analytic -
+// no texture, so it is infinitely sharp - which means it needs its own
+// filtering: a checker of *unfiltered* squares is the textbook aliasing case
+// (moire rings rolling through the horizon as the camera moves).
+//
+// The formula below is the standard filtered box filter of the square wave:
+// the integral of a unit square wave over a pixel footprint is a triangle wave,
+// so the 2D box filter of the checker is 0.5 - 0.5 * (tri(px) * tri(py)):
+//
+//     i = 2 * (tri(uv - dp/2) - tri(uv + dp/2)) / dp
+//
+// which returns the exact average of the pattern over the footprint. The
+// squares therefore stay square up close and dissolve into a flat 50 % grey
+// exactly where they would start to shimmer, with no mip chain and no LOD bias.
+float checkerPattern(vec2 p, vec2 dp) {
+  dp = max(dp, vec2(1e-5));
+  // Clamp the footprint so a grazing pixel does not divide by a huge number
+  // (the pattern is already fully averaged by then).
+  dp = min(dp, vec2(1.0));
+  vec2 i = 2.0 * (abs(fract((p - 0.5 * dp) * 0.5) - 0.5) -
+                  abs(fract((p + 0.5 * dp) * 0.5) - 0.5)) / dp;
+  return clamp(0.5 - 0.5 * i.x * i.y, 0.0, 1.0);
+}
+
 // Where water collects. Two octaves of the tiling noise volume give large
 // pooling areas with a ragged, believable edge.
 float puddleMask(vec2 xz, float puddles) {
@@ -98,6 +126,24 @@ void main() {
   // ---- surface ---------------------------------------------------------
   float albedo = groundAlbedo(world.xz);
   float puddle = puddleMask(world.xz, frame.weather2.y) * wet;
+
+  // ---- checkerboard ----------------------------------------------------
+  // Only lit where the floor is visible, dissolving with distance so the
+  // horizon stays a clean aerial-perspective fade instead of a moire band.
+  if (frame.ground0.x > 0.001) {
+    vec2 dp = max(fwidth(world.xz * frame.ground0.y), vec2(1e-6));
+    float squares = checkerPattern(world.xz * frame.ground0.y, dp);
+    float dist = length(world - frame.camPos.xyz);
+    float fade = 1.0 - smoothstep(frame.ground0.z * 0.45, frame.ground0.z, dist);
+    // Puddles fill the grout lines first, so the pattern fades where water
+    // stands; that keeps the wet shots from looking like a tiled pool.
+    float amt = frame.ground0.x * fade * (1.0 - 0.55 * puddle);
+    // The floor's albedo is a scalar here, so the two square colours are
+    // reduced to their luminance; the material response (shadows, water,
+    // bounce) is shared with the stone underneath.
+    float checkValue = luma(mix(frame.ground2.rgb, frame.ground1.rgb, squares));
+    albedo = mix(albedo, checkValue, amt);
+  }
 
   // Wet stone is much darker than dry stone: the water film stops the diffuse
   // return at the surface and lets the light scatter inside the layer instead.

@@ -48,7 +48,9 @@ vec3 hairShadow(out vec3 spread, out float directF, vec3 pShad) {
     return vec3(1.0);
   }
   const float coverage = 0.05;
-  const vec3 a_f = vec3(0.507475266, 0.465571405, 0.394347166);
+  // The absorption set follows the active hair material instead of the demo's
+  // blond constants, so a rosa/other material does not keep a blond shadow.
+  vec3 a_f = clamp(frame.fiber.rgb, vec3(0.02), vec3(0.98));
   const vec3 w_f = vec3(0.028135575, 0.027669785, 0.027669785);
   float hairDensity = frame.fiber2.z;
 

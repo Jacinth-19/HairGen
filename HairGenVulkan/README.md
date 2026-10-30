@@ -73,17 +73,56 @@ whole head into one pink mass. Blond is still one dropdown away.
 *chromatic* remap of the scattered radiance: the target colour is normalised by
 its brightest channel (absorption semantics - a dye can only subtract light) and
 the fibre's luminance is redistributed into that hue, with the specular bands
-kept partly white. Per-strand jitter and a root→tip ramp (the `MIN_COLOR`
-gradient from `mravella/hair`) then give the mass depth instead of a flat wig.
-Twenty named colours plus any `#RRGGBB`, and the default is **rosa**, not blond.
+kept partly white. Per-strand jitter and a root→tip ramp then give the mass
+depth instead of a flat wig - the ramp is that project's `MIN_COLOR` formula
+with its own constants (`MIN_COLOR = 0.5`, `MAX_COLOR_START = 0.3`), declared at
+the top of `hair.frag` so the file can be diffed against `constants.glsl`
+instead of merely resembling it. `HAIR_SHININESS` is likewise the source's 50,
+not a retuned value.
 A Kajiya-Kay wrap-diffuse + tight highlight pair (`sqrt(1-|T·L|)`,
-`pow(sqrt(1-|T·H|), 96)`, both from `mravella/hair`) is added on top of the
-Marschner tables so the fibres keep a glossy band.
+`pow(sqrt(1-|T·H|), HAIR_SHININESS)`, both from `mravella/hair`) is added on top of the
+Marschner tables so the fibres keep a glossy band, and a cool **fill light**
+(`FILL_LIGHT_POS`, also from that project) keeps the shadow half of the head
+from collapsing into a silhouette.
 
-**Hairstyles.** One guide mesh, eight styles: `bob`, `sleek`, `wavy`, `curly`,
-`afro`, `pixie`, `long`, `punk`. Each is a full set of fuzz / frizz / kink /
-clump / curl operator values - the "author many styles from one hair mesh by
-stacking procedural operators" idea from the SIGGRAPH'24 hair-mesh paper.
+The palette is 39 named colours plus any `#RRGGBB`, laid out in the panel as
+*Natural* (jet → platinum, ginger → wine) and *Fashion* (rosa, violet, teal,
+emerald, sunset, …); `--list-dyes` prints them. The start-up look is **rosa**,
+and the default dye triple is now the palette entry converted to linear, so the
+hex in the panel, the lit-up swatch and the render finally agree (they used to
+be three different pinks).
+
+**Ombre, balayage, dip dye.** The dye is a *pair* of colours plus a gradient:
+`dye` at the root, `dye_tip` at the ends, and `dye_gradient` controlling where
+the tip colour takes over. `0` is a flat dye, `0.75` a soft ombre, `1.0` a
+balayage that saturates at the tips, and anything above `1` a hard dip-dye band
+(`1.6` covers the last ~60 % of the strand). The blend happens per fragment from
+the strand parameter, so it follows the cut, not screen space. The panel has
+one-click **Flat / Ombre / Balayage / Dip dye** buttons that derive the tip
+colour from the root, and `--dye-tip` / `--dye-gradient` do the same from the
+shell.
+
+**Hairstyles: 26 presets, male and female.** One guide mesh, and every style is
+a full set of fuzz / frizz / kink / clump / curl operator values - the "author
+many styles from one hair mesh by stacking procedural operators" idea from the
+SIGGRAPH'24 hair-mesh paper - plus two silhouette controls added here, because
+operators alone cannot turn a long style into a short one:
+
+* `cut_length` (0.15–1) truncates every strand along its own parameter, so a
+  buzz cut, a crew cut and a bob are the same mesh cut at different points;
+* `volume` (0–1) lifts the mass radially off the skull, which is what separates
+  an afro or a pompadour from a slick back.
+
+| long / female | | short / male | |
+|---|---|---|---|
+| `bob` `lob` `layered` | `wavy` `curls` `coils` | `buzz` `crew` `fade` | `side_part` `quiff` `pompadour` |
+| `sleek` `long` `pixie` | `fringe` `volume` `editorial` | `textured` `slick_back` `curly_top` | `mohawk` |
+| unisex: | `afro` `shag` `punk` `wet_look` | | |
+
+`--list-styles` prints the table with each preset's cut length, volume and
+suggested dye; the panel's **Styles** window shows them as a gallery with
+gender icons, a group filter, per-style tooltips and a highlight on the active
+style. Switching style intentionally leaves the dye alone.
 
 **Artifact fixes on the scanned bust.** The head is a torn, overlapping
 triangle strip, and most of what looked ugly came from that:
@@ -97,6 +136,38 @@ self-shadow. On the shading side the diffuse uses a wide wrap term, the scalp is
 darkened under the hair, and UVs are mirrored back into the island instead of
 `fract()`-wrapped (wrapping sampled the far side of the photo, which drew a
 tonal seam down the face).
+
+**Artifact fixes on the hair.** The strand pipeline hid a handful of real defects that
+between them made the hair look flat and occasionally exploded:
+
+* **The hair shadow map was empty.** In the shadow pass the ribbon was never
+  expanded, so every strand collapsed to a zero-area quad and wrote no depth.
+  Nothing self-shadowed, the mass rendered fully lit from every angle, and the
+  floor never received a hair shadow - the single biggest reason the render did
+  not look like the reference. The shadow pass now widens the ribbon in light
+  space (`kShadowWidth`), which is all the Beer-Lambert lookup needs.
+* **The second ribbon vertex used the first vertex's clump delta**
+  (`p2 += cDiff` instead of `cDiff2`), which bent every ribbon segment.
+* **Division by a zero-length delta.** With the demo's default `clumpSize = 0`
+  the clump factor was `0/0` → NaN → black shards across the frame. Both lengths
+  are clamped, and the root frame (`uDir`/`vDir` cross product) is sanitised, as
+  is a degenerate tangent (a NaN tangent used to erase whole ribbons).
+* **The material's absorption was ignored in the shadow model**, which hard-coded
+  the blond constants: a rosa render kept a blond shadow tint. The shadow now
+  reads `frame.fiber`.
+* The shadow lookup (~45 taps) was evaluated twice per fragment; the direct
+  fraction is handed back from `ShadeHair()` instead.
+* `--hair-count` (and the panel's strand slider) did nothing on a live render:
+  `set_scene()` compared the request against the *per-bundle* count and the test
+  could never be true. It now compares against the values the geometry was
+  actually built with.
+
+**High-quality output.** The tonemapper is the reference ACES fit (RRT+ODT, with
+the ACEScg input/output matrices) rather than the Narkowicz approximation, so a
+pink or blond highlight keeps its chroma instead of bleaching to white; the
+8-bit dither is triangular, which removes the sky banding at half the amplitude,
+and MSAA is combined with alpha-to-coverage on the ribbons so the silhouette
+dissolves into fibres instead of a polygon edge.
 
 **Skin detail.** The supplied head maps (`normal`, `height`, `ao`, `specular`)
 are wired into `head.frag`: a TBN built from UV gradients (the mesh carries no
@@ -115,6 +186,18 @@ skin albedo with wrapped diffuse, GGX specular and hair-shadow transmittance.
 **Lighting & shadows.** Two 1 k² shadow maps per frame (object depth + hair
 depth for the transmittance model), image-based ambient from the sky table, sun
 disc, and an infinite ground plane that catches the ground shadow.
+
+**Studio checkerboard floor.** The floor under the bust is an analytic
+checkerboard (`ground.frag`) - no texture, so it is sharp at any distance, which
+also means it has to filter itself: the pattern is a box filter of the square
+wave (`0.5 - 0.5·tri(px)·tri(py)`, i.e. the classic "integrated checker"), so
+the squares stay square up close and dissolve into flat 50 % grey exactly where
+they would start to moiré, with no mip chain and no LOD bias. Square size, edge
+fade distance and both square colours are exposed (`--checker`,
+`--checker-scale`, `--checker-fade`, and the panel's *Ground* window), puddles
+eat into the pattern where water stands, and the checker is *albedo* - shadows,
+wetness and the sky bounce all still apply on top of it. Default: on, 1.6
+squares per world unit, dissolving at 7 m.
 
 **Sky: Preetham 1999.** The atmosphere is the analytic daylight model from
 Preetham, Shirley & Smits -- the same model three.js' `Sky.js` ships, ported to
@@ -220,7 +303,7 @@ External references mined for techniques (nothing is copied verbatim):
 | source | taken |
 |---|---|
 | SIGGRAPH'24 hair-mesh paper | procedural styling operators over one guide mesh (the `--style` presets), texture-space strand layout, LOD thinking |
-| `github.com/mravella/hair` | `diffuse = sqrt(1-|T·L|)`, `spec = pow(sqrt(1-|T·H|), shininess)`, per-strand `colorVariation`, root→tip `MIN_COLOR` gradient |
+| `github.com/mravella/hair` | `diffuse = sqrt(1-|T·L|)`, `spec = pow(sqrt(1-|T·H|), shininess)`, per-strand `colorVariation`, root→tip `MIN_COLOR` gradient, the cool `FILL_LIGHT` that lifts the shadow side, billboarded ribbon strips, PCF/opacity-mapped hair shadows (reimplemented as the transmittance model) |
 
 `root.rot` is exported but unused: in the demo it only feeds the (disabled)
 simulation path; `obj_vert_nor`/`obj_vert_tex` are unused by the demo itself.
@@ -233,12 +316,22 @@ hairgen --out render.png [options]
   --size N | --width N --height N     resolution (default 768)
   --samples N                          MSAA: 1, 2, 4, 8 (default 4)
   --frames N --sequence DIR --anim NAME --fps N
-  --style bob|sleek|wavy|curly|afro|pixie|long|punk   procedural hairstyle
-  --dye HEX|NAME                       hair dye (#RRGGBB, or rosa|blonde|copper|
-                                       auburn|burgundy|black|violet|teal|silver|
-                                       platinum|sunset|mint|lilac|... )
+  --style NAME                         hairstyle preset (26: bob, lob, sleek, long,
+                                       layered, wavy, curls, coils, afro, shag,
+                                       pixie, fringe, volume, editorial, wet_look,
+                                       punk, buzz, crew, fade, textured,
+                                       side_part, quiff, pompadour, slick_back,
+                                       curly_top, mohawk) -- see --list-styles
+  --list-styles --list-dyes            print the catalogues
+  --cut-length F --volume F            silhouette: length along the guide mesh, lift
+  --dye HEX|NAME                       hair dye (#RRGGBB, or any of the 39 names,
+                                       e.g. rosa|copper|auburn|burgundy|violet|
+                                       teal|platinum|honey|jet|emerald|...)
+  --dye-tip HEX|NAME                   ombre tip colour (implies gradient 0.75)
+  --dye-gradient F                     0 flat, 0.75 ombre, 1.0 balayage, 1.6 dip dye
   --dye-strength F                     0 = original fibre colour, 1 = fully dyed
   --root-darken F --color-var F        root shadow / per-strand colour jitter
+  --fill F --sheen F                   fill light / anisotropic sheen (0..1)
   --clump F --clump-size F --curl F --curl-twists F --frizz F --kink F --fuzz F
   --density F --length-var F --hair-count N --segments N --width-px F
   --rot R --tilt R --dist D --fov F
@@ -247,17 +340,22 @@ hairgen --out render.png [options]
   --turbidity F --rayleigh F --mie F --mie-g F    Preetham atmosphere
   --rain F --wetness F --wind F --wind-dir R --gravity F --puddles F
   --lens-drops F                       weather / liquid effects
+  --checker F --no-checker             studio checkerboard floor (default on)
+  --checker-scale F --checker-fade F   squares per world unit / fade distance
   --preset dry|drizzle|rain|storm|sunset|noon
   --no-hair --no-head --no-ground
   --lines | --render-mode 0|1          strand lines (demo default) vs ribbons
   --root-samples                       explicit root table from the demo
   --no-collide                         disable head collider push-out
   --show-hairmesh                      overlay the hair-mesh cage
-  --serve PORT        interactive panel (see below)
+  --serve PORT        studio panel (see below)
+  --no-ui             serve raw frames only
+  --fonts DIR         Roboto + icon subset directory (default assets/fonts)
+  --ui-dump FILE      render the panel alone to a PNG (needs no Vulkan)
   --list-devices      print the Vulkan adapters
 ```
 
-### Interactive panel
+### Studio panel (Dear ImGui, dockable)
 
 ```sh
 ./build/hairgen --serve 8099 --size 640
@@ -265,16 +363,63 @@ hairgen --out render.png [options]
 #   --size 384 --samples 1 --hair-count 6000   (~2 frames/s on lavapipe)
 ```
 
-`http://localhost:8099/` serves the panel in `assets/web/` (fixed preview on the
-left, scrollable parameter column on the right, styled after the demo's
-`style.css`). The page drives the native renderer over a tiny HTTP API:
+`http://localhost:8099/` is the **studio panel**: a real Dear ImGui (docking
+branch) interface, composited into the streamed frames.
+
+| | |
+|---|---|
+| ![panel](media/stills/panel.png) | ![styles](media/stills/panel_styles.png) |
+
+There is no window and no swapchain here, so the panel does not use a GPU
+backend at all:
+
+* **It is a real ImGui context.** `src/ui.cpp` builds the whole interface -
+  `DockSpaceOverViewport` with a passthrough central node so the render shows
+  through, and ten dockable, resizable, tabbable, floatable windows: **Hair**
+  (silhouette, shading, the full operator stack), **Colour** (palette, root/tip
+  pickers, ombre presets, variation), **Styles** (the 26-preset gallery),
+  **Lighting** (sun, atmosphere, nine look presets), **Ground** (checkerboard,
+  water), **Weather**, **Camera** (with front / ¾ / side / back buttons),
+  **Output** (stats, save-frame, "copy CLI command", reset) and **About**.
+* **Widget polish on top of stock ImGui**: label-left sliders whose track is a
+  filled bar (ImGui paints its knob *under* the value text, so a mid-range value
+  is unreadable), right-click-to-reset on every slider, a section-header style,
+  a dye palette as a chip grid with hover previews, per-style gendered icons, and
+  a CLI echo per window so a look can be reproduced from the shell.
+* **The draw lists are rasterised on the CPU** (`src/ui_draw.cpp`): edge-function
+  triangles, top-left rule, bilinear font-atlas sampling, straight-alpha "source
+  over" - about 250 lines, no graphics API. That keeps the panel working on any
+  driver stack (including a headless lavapipe box) and means it costs *nothing*
+  on the GPU.
+* **Input arrives over HTTP.** `assets/web/studio.js` maps pointer coordinates
+  back through the letterboxed image and beacons mouse / wheel / key / text
+  events to `GET /ui/input?x=…&y=…&b=…&d=…`, which the server turns into
+  `ImGuiIO` events. Motion is coalesced to one packet per 30 ms so a slow render
+  cannot build a queue.
+* **Fonts and icons.** Roboto (regular + medium) for text and a 10 kB subset of
+  Material Design Icons for glyph icons, merged into the atlas with
+  `IMGUI_USE_WCHAR32` (the glyphs live above the BMP). `tools/make_icons.py`
+  regenerates both the subset TTF and `src/ui_icons.hpp` from `@mdi/font`.
+  Everything degrades gracefully: no fonts on disk → ImGui's built-in face.
+
+The HTML page is only the shell (a stage, a status pill and a few buttons) -
+every control lives in the dockable panels.
 
 | endpoint | purpose |
 |---|---|
-| `POST /params` | JSON `{ "fuzz": 0.12, "rain": 0.6, "wind": 0.4, "turbidity": 3.0, "renderMode": 0, ... }` scene update |
-| `GET /stream` | MJPEG preview of live GPU frames |
+| `GET /` | the studio shell (`assets/web/studio.html`) |
+| `GET /classic` | the original DOM panel, unchanged |
+| `GET /stream` | MJPEG preview of live GPU frames, with the panel baked in |
 | `GET /snapshot.png` | single frame as PNG |
-| `GET /scene` | current camera/hair values as JSON |
+| `GET /scene` | camera/hair values as JSON |
+| `POST /params` | JSON scene update (used by the classic panel) |
+| `GET /ui/input?…` | one panel input event (mouse, wheel, key, text) |
+| `GET /ui/toggle` | show/hide the panel; `/ui/quit` stops the server |
+
+**Panel screenshots without a GPU.** `--ui-dump FILE` renders the panel over a
+stand-in background and writes a PNG. It needs no Vulkan at all, so it is both
+the way `media/stills/panel*.png` are made (`HGEN_UI_FOCUS=colour` photographs
+one window) and a zero-dependency smoke test for the UI.
 
 Connections are served on their own threads and the renderer is guarded by a
 render mutex, so the sliders keep working while a stream is live.
@@ -289,6 +434,14 @@ meson test -C build          # add VK_ICD_FILENAMES=... to include the render te
 * `test_png` - the PNG writer emits valid IHDR/IDAT/IEND chunks.
 * `test_assets` - the bundle has every chunk the renderer needs, with the demo's
   dimensions (7×6×13 hair mesh, 22 bundles, 256² clump map, ≥25 % coverage).
+* `test_ubo` - the frame UBO is declared twice (GLSL `FrameBlock` and C++
+  `FrameUbo`); the test parses both and fails if the field order, types or the
+  704-byte size ever drift apart.
+* `test_ui` - the palette round-trips (linear ↔ sRGB ↔ hex, default dye == the
+  rosa swatch), the hairstyle catalogue is complete and in range, `cli_command`
+  reproduces a scene, and the ImGui panel really draws: four frames over a flat
+  buffer, at least five windows docked, and synthetic input reaches the scene.
+  It needs no GPU, so it runs everywhere.
 * `integration_render` - renders a frame headlessly, validates the PNG, checks
   the image is not flat, and verifies the hair pass changes ≥10 % of pixels.
   It skips (meson `77`) when no Vulkan device is available.
@@ -299,7 +452,8 @@ meson test -C build          # add VK_ICD_FILENAMES=... to include the render te
 
 | file | contents |
 |---|---|
-| `media/stills/*.png` | hero shot, 8 dye swatches, 8 hairstyles, 4 lighting setups, 6 control sweeps, 5 mode stills, 8 weather stills |
+| `media/stills/*.png` | hero shot, 11 dye swatches (incl. ombre / balayage / dip dye), 26 hairstyles, 4 ground/checker variants, 4 look presets, 4 lighting setups, 6 control sweeps, 5 mode stills, 8 weather stills |
+| `media/stills/panel*.png` | the dockable ImGui panel, whole and per window (rendered by `--ui-dump`, no GPU needed) |
 | `media/stills/mode_*.png` | lines vs ribbons, root samples, hair-mesh cage, no-collide |
 | `media/mode_comparison.png` | the four modes side by side |
 | `media/hero_1536.png` | 1536² hero render |
@@ -317,22 +471,36 @@ meson test -C build          # add VK_ICD_FILENAMES=... to include the render te
 ```
 src/            main.cpp (CLI), renderer.{hpp,cpp}, vk_util (device/queues/images/
                 pipelines/descriptors), vk_loader (runtime loader + ICD scan),
-                assets (bundle reader), png (writer), web (preview server), math
+                assets (bundle reader), png (writer), web (preview server), math,
+                scene.hpp (parameters, dye palette, hairstyle catalogue),
+                ui.{hpp,cpp} (the dockable ImGui panel), ui_draw.cpp (its CPU
+                rasteriser), ui_icons.hpp (generated icon codepoints)
 shaders/        GLSL 450 sources + lib/common.glsl, lib/shadow.glsl,
                 lib/hair_shading.glsl, lib/sky_model.glsl (Preetham),
                 lib/sky.glsl (clouds + rain veil)  ->  src/shaders_generated.hpp
                 (edit a shader, then `ninja -C build shaders && ninja -C build`;
                  the `shaders-check` target fails the build on a stale header)
-tools/          export_assets.js, compile_shaders.py, capture.py
+tools/          export_assets.js, compile_shaders.py, capture.py, make_icons.py
 tests/          unit + integration tests (meson)
-assets/         hairgen_assets.bin, web/{index.html,style.css,app.js}
+assets/         hairgen_assets.bin, fonts/{Roboto-Regular,Roboto-Medium,
+                MaterialDesignIcons-Subset}.ttf, web/{studio,index}.html,
+                web/{studio,style}.css, web/{studio,app}.js
+third_party/    vulkan headers, miniz, imgui (1.91.8-docking: core only)
 media/          rendered deliverables
 ```
 
 Regenerate shaders with `ninja -C build shaders` (needs `glslangValidator` on
 `PATH` or in `tools/bin/`, e.g.
 `npm pack glslang-validator-prebuilt-predownloaded`) and the asset bundle with
-`ninja -C build assets` (needs node).
+`ninja -C build assets` (needs node). The icon font is regenerated with
+`python3 tools/make_icons.py --mdi <@mdi/font package> --ttf
+assets/fonts/MaterialDesignIcons-Subset.ttf --header src/ui_icons.hpp` (needs
+`fonttools`); the text fonts are plain Roboto TTFs from `roboto-fontface`,
+converted from WOFF with `fontTools`.
+
+Dear ImGui is vendored (docking branch, core only, no backends): `imgui.cpp`,
+`imgui_draw.cpp`, `imgui_tables.cpp`, `imgui_widgets.cpp` plus the headers, and
+`imconfig.h` sets `IMGUI_USE_WCHAR32` for the icon codepoints.
 
 ## Render graph
 
@@ -365,6 +533,10 @@ sky LUT bake (256×128) ──┘        │  sky · ground · head · hair
 * `july_rootsamples.js` holds one root per strip (the demo draws at most 1 000).
   Above that, roots are reused cyclically with a small per-strand offset, which
   keeps the demo's root distribution while allowing dense renders.
+* The ImGui panel is new (the demo drives WebGL uniforms from a DOM form). It
+  is a real docking workspace, but it cannot use ImGui's OpenGL/Vulkan backends
+  here: the renderer has no window, so the draw lists are rasterised on the CPU
+  into the frame that is streamed to the browser (`src/ui_draw.cpp`).
 * The `HGEN_SKIP=passname ...` environment variable skips render passes
   (`background`, `grounddraw`, `headdraw`, `hairdraw`, `rain`, `simplesky`) and
   is handy when bisecting driver problems. `HGEN_DBG=N` replaces the head

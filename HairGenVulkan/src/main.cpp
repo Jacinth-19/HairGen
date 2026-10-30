@@ -14,6 +14,7 @@
 #include "renderer.hpp"
 #include "scene.hpp"
 #include "vk_util.hpp"
+#include "ui.hpp"
 #include "web.hpp"
 
 namespace {
@@ -39,17 +40,26 @@ void usage() {
       "  --hair-count N        strands (default 10000)\n"
       "  --segments N          segments per strand (default 32)\n"
       "  --width-px F          ribbon width in pixels (default 1.6)\n"
-      "  --style NAME          blond | brown | rosa | curly | straight\n"
+
       "  --clump F --clump-size F --clump-var F --clump-noise F\n"
       "  --curl F --curl-twists F --curl-freq F\n"
       "  --frizz F --frizz-freq F --kink F --kink-freq F --fuzz F\n"
       "  --density F --length-var F --fiber-r/-g/-b F\n"
       "  --no-hair --no-head --no-ground --ground-y F\n"
       "  --material NAME       hair material: std_blond | rosa (own Marschner LUTs)\n"
-      "  --style NAME          hairstyle preset: bob|sleek|wavy|curly|afro|pixie|long|punk\n"
+      "  --style NAME          hairstyle preset (bob|...|mohawk, 26 total, see\n"
+      "                        --list-styles); the demo's blond|brown|rosa|curly|\n"
+      "                        straight still work as aliases\n"
       "  --dye HEX|NAME        hair dye colour (hex, or rosa|platinum|copper|auburn|\n"
       "                        black|violet|teal|silver|burgundy|sunset)\n"
       "  --dye-strength F      0 = original fibre colour, 1 = fully dyed (default 0.88)\n"
+      "  --dye-tip HEX|NAME    ombre tip colour (implies --dye-gradient 0.75)\n"
+      "  --dye-gradient F      0 flat, 0.75 ombre, 1.5 dip dye (default 0)\n"
+      "  --cut-length F        hair length along the guide mesh (0.15..1, default 1)\n"
+      "  --volume F            lift the mass off the skull (0..1, default 0)\n"
+      "  --fill F --sheen F    fill light / anisotropic sheen (0..1)\n"
+      "  --list-styles         print the hairstyle catalogue\n"
+      "  --list-dyes           print the dye palette\n"
       "  --root-darken F       how much darker the roots are (default 0.45)\n"
       "  --color-var F         per-strand tint jitter (default 0.16)\n"
       "  --r-dev D --tt-dev D --trt-dev D  fibre lobe widths (degrees)\n"
@@ -72,6 +82,9 @@ void usage() {
       "  --wind F --wind-dir R wind strength and azimuth for rain and hair\n"
       "  --gravity F           hair sag / weight (default 0.35)\n"
       "  --puddles F           how much of the ground holds water (default 0.55)\n"
+      "  --checker F           studio checkerboard amount (0..1, default 1)\n"
+      "  --checker-scale F     squares per world unit (default 1.6)\n"
+      "  --checker-fade F      distance where the checker dissolves (default 7)\n"
       "  --lens-drops F        rain droplets on the virtual lens (defaults to rain)\n"
       "  --preset NAME         dry | drizzle | rain | storm | sunset | noon\n"
       "  --shadow-res N        shadow map resolution (default 1024)\n"
@@ -81,7 +94,9 @@ void usage() {
       "  --icd PATH            use a specific Vulkan ICD/loader\n"
       "  --list-devices        print Vulkan adapters and exit\n"
       "  --validation          enable the validation layer when available\n"
-      "  --serve PORT          run the interactive web preview server\n"
+      "  --serve PORT          run the studio server (dockable ImGui panel streamed to a browser)\n"
+      "  --no-ui               serve raw frames only (no panel composited in)\n"
+      "  --fonts DIR           directory with Roboto + the icon subset (default assets/fonts)\n"
       "  --help\n");
 }
 
@@ -122,6 +137,64 @@ std::string resolve_asset_dir(const std::string& requested) {
   return requested.empty() ? std::string("assets") : requested;
 }
 
+
+// --ui-dump: render the panel over a stand-in background and write a PNG.
+//
+// It needs no Vulkan at all - the panel is pure CPU work - so it doubles as a
+// smoke test for the ImGui integration on any machine, and as the source of the
+// panel screenshots in the README.
+int run_ui_dump(const std::string& out_path, int width, int height, const std::string& fonts_dir,
+                const hgen::Scene& scene) {
+  using namespace hgen;
+  UiPanel ui;
+  std::string dir = fonts_dir;
+  if (dir.empty()) {
+    const char* candidates[] = {"assets/fonts", "../assets/fonts", "HairGenVulkan/assets/fonts"};
+    for (const char* d : candidates) {
+      if (FILE* f = fopen((std::string(d) + "/Roboto-Regular.ttf").c_str(), "rb")) {
+        fclose(f);
+        dir = d;
+        break;
+      }
+    }
+  }
+  ui.init(dir, width >= 1100 ? 1.35f : (width >= 900 ? 1.15f : 1.0f));
+  // HGEN_UI_FOCUS=<id> photographs one panel window at a time (used to make the
+  // screenshots in the README): hair, colour, styles, lighting, ground, weather,
+  // camera, output, help.
+  if (const char* focus = std::getenv("HGEN_UI_FOCUS")) ui.set_solo(focus);
+  std::vector<uint8_t> px(size_t(width) * height * 4);
+  Scene s = scene;
+  for (int frame = 0; frame < 8; ++frame) {
+    // Stand-in for the render: a dusk gradient with a soft vignette, so the
+    // panel's translucency and the dockspace passthrough are both visible.
+    for (int y = 0; y < height; ++y) {
+      const float v = float(y) / float(height - 1);
+      for (int x = 0; x < width; ++x) {
+        const float u = float(x) / float(width - 1);
+        const float vignette = 1.0f - 0.35f * ((u - 0.5f) * (u - 0.5f) + (v - 0.5f) * (v - 0.5f));
+        uint8_t* p = &px[(size_t(y) * width + x) * 4];
+        p[0] = uint8_t(58.0f * vignette + 24.0f * v);
+        p[1] = uint8_t(52.0f * vignette + 18.0f * v);
+        p[2] = uint8_t(64.0f * vignette + 30.0f * v);
+        p[3] = 255;
+      }
+    }
+    UiStats stats;
+    stats.width = width;
+    stats.height = height;
+    stats.samples = 4;
+    stats.fps = 12.3f;
+    stats.cpu_ms = 41.0;
+    stats.triangles = 637836;
+    stats.strands = 34000;
+    ui.frame(s, stats, px.data(), width, height, 1.0f / 30.0f);
+  }
+  write_png_rgba(out_path.c_str(), width, height, px);
+  printf("[hairgen] wrote %s (%dx%d panel preview)\n", out_path.c_str(), width, height);
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -135,6 +208,7 @@ int main(int argc, char** argv) {
   bool validation = false;
   bool list_devices = false;
   int serve_port = 0;
+  opt.ui = true;
   opt.output_png = "render.png";
   opt.fps = 30.0f;
 
@@ -162,22 +236,6 @@ int main(int argc, char** argv) {
     else if (match(a, "--hair-count")) scene.hair.hair_count = std::atoi(next(a).c_str());
     else if (match(a, "--segments")) scene.hair.segments = std::atoi(next(a).c_str());
     else if (match(a, "--width-px")) scene.hair.width_px = float(std::atof(next(a).c_str()));
-    else if (match(a, "--style")) {
-      std::string s = next(a);
-      if (s == "blond" || s == "std_blond") {
-        scene.hair.a_f[0] = 0.507475266f; scene.hair.a_f[1] = 0.465571405f; scene.hair.a_f[2] = 0.394347166f;
-      } else if (s == "brown") {
-        scene.hair.a_f[0] = 0.18f; scene.hair.a_f[1] = 0.115f; scene.hair.a_f[2] = 0.07f;
-      } else if (s == "rosa") {
-        scene.hair.a_f[0] = 0.62f; scene.hair.a_f[1] = 0.28f; scene.hair.a_f[2] = 0.33f;
-      } else if (s == "curly") {
-        scene.hair.curl_amount = 0.075f; scene.hair.curl_twists = 14.0f; scene.hair.curl_freq = 1.6f;
-        scene.hair.frizz_amount = 0.05f; scene.hair.curl_exp = 0.35f;
-      } else if (s == "straight") {
-        scene.hair.curl_amount = 0.004f; scene.hair.frizz_amount = 0.006f; scene.hair.kink_amount = 0.004f;
-        scene.hair.fuzz_amount = 0.05f;
-      }
-    }
     else if (match(a, "--clump")) scene.hair.clump_percent = float(std::atof(next(a).c_str()));
     else if (match(a, "--clump-size")) scene.hair.clump_size = float(std::atof(next(a).c_str()));
     else if (match(a, "--curl")) scene.hair.curl_amount = float(std::atof(next(a).c_str()));
@@ -215,9 +273,27 @@ int main(int argc, char** argv) {
       }
     }
     else if (match(a, "--style")) {
-      std::string s = next(a);
-      if (!hgen::apply_hairstyle(scene.hair, s)) {
-        std::fprintf(stderr, "unknown hairstyle: %s\n", s.c_str());
+      // One flag, two families: the demo panel's original colour/shape buttons
+      // (blond | brown | rosa | curly | straight) stay valid as aliases, and
+      // everything else is looked up in the hairstyle catalogue. The lookup has
+      // to be the *fallback* here - a second `else if (match(a, "--style"))`
+      // further down never ran, which made all 26 presets unreachable from the
+      // command line.
+      const std::string s = next(a);
+      if (s == "blond" || s == "std_blond") {
+        scene.hair.a_f[0] = 0.507475266f; scene.hair.a_f[1] = 0.465571405f; scene.hair.a_f[2] = 0.394347166f;
+      } else if (s == "brown") {
+        scene.hair.a_f[0] = 0.18f; scene.hair.a_f[1] = 0.115f; scene.hair.a_f[2] = 0.07f;
+      } else if (s == "rosa") {
+        scene.hair.a_f[0] = 0.62f; scene.hair.a_f[1] = 0.28f; scene.hair.a_f[2] = 0.33f;
+      } else if (s == "curly") {
+        scene.hair.curl_amount = 0.075f; scene.hair.curl_twists = 14.0f; scene.hair.curl_freq = 1.6f;
+        scene.hair.frizz_amount = 0.05f; scene.hair.curl_exp = 0.35f;
+      } else if (s == "straight") {
+        scene.hair.curl_amount = 0.004f; scene.hair.frizz_amount = 0.006f; scene.hair.kink_amount = 0.004f;
+        scene.hair.fuzz_amount = 0.05f;
+      } else if (!hgen::apply_hairstyle(scene.hair, s)) {
+        std::fprintf(stderr, "unknown hairstyle: %s (try --list-styles)\n", s.c_str());
         std::exit(2);
       }
     }
@@ -230,6 +306,33 @@ int main(int argc, char** argv) {
     else if (match(a, "--dye-strength")) scene.hair.dye_strength = float(std::atof(next(a).c_str()));
     else if (match(a, "--root-darken")) scene.hair.root_darken = float(std::atof(next(a).c_str()));
     else if (match(a, "--color-var")) scene.hair.color_variation = float(std::atof(next(a).c_str()));
+    else if (match(a, "--cut-length")) scene.hair.cut_length = float(std::atof(next(a).c_str()));
+    else if (match(a, "--volume")) scene.hair.volume = float(std::atof(next(a).c_str()));
+    else if (match(a, "--dye-tip")) {
+      std::string t = next(a);
+      float c[3];
+      if (hgen::parse_hair_color(t, c)) { scene.hair.dye_tip[0] = c[0]; scene.hair.dye_tip[1] = c[1]; scene.hair.dye_tip[2] = c[2]; }
+      else { std::fprintf(stderr, "unknown tip colour: %s\n", t.c_str()); std::exit(2); }
+      if (scene.hair.dye_gradient <= 0.001f) scene.hair.dye_gradient = 0.75f;
+    }
+    else if (match(a, "--dye-gradient")) scene.hair.dye_gradient = float(std::atof(next(a).c_str()));
+    else if (match(a, "--fill")) scene.hair.fill_light = float(std::atof(next(a).c_str()));
+    else if (match(a, "--sheen")) scene.hair.sheen = float(std::atof(next(a).c_str()));
+    else if (match(a, "--checker")) scene.sky.checker = float(std::atof(next(a).c_str()));
+    else if (match(a, "--no-checker")) scene.sky.checker = 0.0f;
+    else if (match(a, "--checker-scale")) scene.sky.checker_scale = float(std::atof(next(a).c_str()));
+    else if (match(a, "--checker-fade")) scene.sky.checker_fade = float(std::atof(next(a).c_str()));
+    else if (match(a, "--list-styles")) {
+      for (int i = 0; i < hgen::kHairstyleCount; ++i)
+        printf("%-11s %-18s %-7s cut %.2f  volume %.2f  dye %s\n", hgen::kHairstyles[i].name,
+               hgen::kHairstyles[i].label, hgen::kHairstyles[i].sex, hgen::kHairstyles[i].cut_length,
+               hgen::kHairstyles[i].volume, hgen::kHairstyles[i].dye_hint);
+      return 0;
+    }
+    else if (match(a, "--list-dyes")) {
+      for (const auto& c : hgen::kDyeColors) printf("%-12s #%06X  (%s)\n", c.name, c.rgb, c.group);
+      return 0;
+    }
     else if (match(a, "--render-mode")) scene.hair.render_mode = std::atoi(next(a).c_str());
     else if (match(a, "--lines")) scene.hair.render_mode = 0;
     else if (match(a, "--root-samples")) scene.hair.use_root_samples = true;
@@ -303,6 +406,9 @@ int main(int argc, char** argv) {
     else if (match(a, "--list-devices")) list_devices = true;
     else if (match(a, "--validation")) validation = true;
     else if (match(a, "--serve")) serve_port = std::atoi(next(a).c_str());
+    else if (match(a, "--no-ui")) opt.ui = false;
+    else if (match(a, "--fonts")) opt.fonts_dir = next(a);
+    else if (match(a, "--ui-dump")) opt.ui_dump = next(a);
     else {
       fprintf(stderr, "unknown option: %s (try --help)\n", a);
       return 2;
@@ -310,6 +416,7 @@ int main(int argc, char** argv) {
   }
 
   try {
+    if (!opt.ui_dump.empty()) return run_ui_dump(opt.ui_dump, opt.width, opt.height, opt.fonts_dir, scene);
     if (list_devices) {
       Gpu gpu;
       VkApi api;
@@ -340,6 +447,8 @@ int main(int argc, char** argv) {
 
     if (serve_port > 0) {
       WebServer server(gpu, assets, renderer, serve_port);
+      server.set_ui_enabled(opt.ui);
+      if (!opt.fonts_dir.empty()) server.set_fonts_dir(opt.fonts_dir);
       return server.run();
     }
 

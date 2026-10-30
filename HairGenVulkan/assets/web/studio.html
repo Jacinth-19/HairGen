@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>HairGen Studio</title>
+<link rel="stylesheet" href="/static/studio.css" />
+</head>
+<body>
+  <!-- The panel is drawn by Dear ImGui inside the renderer and baked into the
+       MJPEG stream, so this page is just a viewport: it shows the frames and
+       forwards pointer/keyboard input back to the panel. -->
+  <div id="stage">
+    <img id="view" alt="HairGen live view" src="/stream" draggable="false" />
+    <div id="boot">
+      <div class="spinner"></div>
+      <p>Starting the renderer&hellip;</p>
+    </div>
+  </div>
+
+  <div id="bar">
+    <span class="brand">HairGen <em>Studio</em></span>
+    <span id="status" class="pill">connecting</span>
+    <span class="spacer"></span>
+    <button id="toggle-panel" title="Show / hide the ImGui panel (also in Panel menu)">Panel</button>
+    <button id="fullscreen" title="Fullscreen">Fullscreen</button>
+    <a class="button" href="/classic" title="The plain HTML control panel">Classic panel</a>
+  </div>
+
+  <script src="/static/studio.js"></script>
+</body>
+</html>

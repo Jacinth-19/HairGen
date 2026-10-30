@@ -17,16 +17,26 @@ target_compile_definitions(miniz PUBLIC MINIZ_NO_ARCHIVE_APIS MINIZ_NO_STDIO)
 target_include_directories(miniz PUBLIC third_party/miniz)
 target_compile_options(miniz PRIVATE -w)
 
+add_library(imgui STATIC
+  third_party/imgui/imgui.cpp
+  third_party/imgui/imgui_draw.cpp
+  third_party/imgui/imgui_tables.cpp
+  third_party/imgui/imgui_widgets.cpp)
+target_include_directories(imgui PUBLIC third_party/imgui)
+target_compile_options(imgui PRIVATE -w)
+
 add_executable(hairgen
   src/main.cpp
   src/assets.cpp
   src/png.cpp
   src/renderer.cpp
+  src/ui.cpp
+  src/ui_draw.cpp
   src/vk_loader.cpp
   src/vk_util.cpp
   src/web.cpp)
 target_include_directories(hairgen PRIVATE third_party)
-target_link_libraries(hairgen PRIVATE miniz dl pthread)
+target_link_libraries(hairgen PRIVATE miniz imgui dl pthread)
 target_compile_options(hairgen PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers)
 
 # Optional: recompile GLSL -> SPIR-V + regenerate src/shaders_generated.hpp.

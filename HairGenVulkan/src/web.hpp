@@ -13,6 +13,10 @@ class WebServer {
   ~WebServer();
   int run();
 
+  // The studio panel is on by default; --no-ui turns it off (raw frames only).
+  void set_ui_enabled(bool on);
+  void set_fonts_dir(const std::string& dir);
+
   struct Impl;  // defined in web.cpp
 
  private:

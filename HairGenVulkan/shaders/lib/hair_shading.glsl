@@ -30,8 +30,10 @@ float Rand(int n, int seed) {
 
 // ShadeHair(): pLight is the light-space position of the shaded point, tangent
 // its view-space fiber tangent, w_o the view vector, instanceID the strand id.
-vec3 ShadeHair(vec3 pLight, vec3 tangent, vec3 w_o, int instanceID) {
-  float directFraction;
+// `directFraction` is handed back to the caller: hair.frag needs it for the
+// Kajiya-Kay term, and the shadow lookup is by far the most expensive thing in
+// this shader (~45 taps), so doing it twice per fragment was pure waste.
+vec3 ShadeHair(vec3 pLight, vec3 tangent, vec3 w_o, int instanceID, out float directFraction) {
   vec3 spread;
   vec3 trans_direct = Shadow(spread, directFraction, pLight, 0.0);
   vec3 trans = trans_direct - directFraction;

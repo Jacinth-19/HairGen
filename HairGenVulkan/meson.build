@@ -70,17 +70,36 @@ if glslang.found() and python.found()
   gen_shaders = [shader_check]
 endif
 
+# ---- Dear ImGui (docking branch, vendored in third_party/imgui) ---------------
+# The panel runs without an OS backend: the HTTP server pushes input in and
+# src/ui_draw.cpp rasterises the draw lists on the CPU over the render, so the
+# docking UI works on a headless machine (no window, no swapchain).
+imgui_src = files(
+  'third_party/imgui/imgui.cpp',
+  'third_party/imgui/imgui_draw.cpp',
+  'third_party/imgui/imgui_tables.cpp',
+  'third_party/imgui/imgui_widgets.cpp',
+)
+imgui_inc = include_directories('third_party/imgui')
+imgui_lib = static_library('imgui', imgui_src,
+  include_directories: imgui_inc,
+  cpp_args: ['-w'],
+  install: false)
+imgui_dep = declare_dependency(link_with: imgui_lib, include_directories: imgui_inc)
+
 # ---- renderer core (shared by the executable and the tests)
 core_src = files(
   'src/assets.cpp',
   'src/png.cpp',
   'src/renderer.cpp',
+  'src/ui.cpp',
+  'src/ui_draw.cpp',
   'src/vk_loader.cpp',
   'src/vk_util.cpp',
   'src/web.cpp',
 )
 
-core_deps = [miniz_dep, thread_dep]
+core_deps = [miniz_dep, thread_dep, imgui_dep]
 if dl_dep.found()
   core_deps += dl_dep
 endif

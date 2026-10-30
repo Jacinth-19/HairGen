@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "png.hpp"
+#include "ui.hpp"
 
 namespace hgen {
 namespace {
@@ -107,6 +108,94 @@ bool json_string(const std::string& body, const char* key, std::string& out) {
   return true;
 }
 
+// ---- tiny query-string helpers for the panel input ------------------------
+std::string url_decode(const std::string& in) {
+  std::string out;
+  out.reserve(in.size());
+  for (size_t i = 0; i < in.size(); ++i) {
+    if (in[i] == '%' && i + 2 < in.size()) {
+      char hex[3] = {in[i + 1], in[i + 2], 0};
+      out.push_back(char(std::strtol(hex, nullptr, 16)));
+      i += 2;
+    } else if (in[i] == '+') {
+      out.push_back(' ');
+    } else {
+      out.push_back(in[i]);
+    }
+  }
+  return out;
+}
+
+bool query_has(const std::string& q, const char* key) {
+  const std::string needle = std::string(key) + "=";
+  size_t p = 0;
+  while ((p = q.find(needle, p)) != std::string::npos) {
+    if (p == 0 || q[p - 1] == '&') return true;
+    p += needle.size();
+  }
+  return false;
+}
+
+std::string query_value(const std::string& q, const char* key) {
+  const std::string needle = std::string(key) + "=";
+  size_t p = 0;
+  while ((p = q.find(needle, p)) != std::string::npos) {
+    if (p == 0 || q[p - 1] == '&') {
+      const size_t start = p + needle.size();
+      const size_t end = q.find('&', start);
+      return url_decode(q.substr(start, end == std::string::npos ? std::string::npos : end - start));
+    }
+    p += needle.size();
+  }
+  return std::string();
+}
+
+float query_float(const std::string& q, const char* key, float fallback = 0.0f) {
+  const std::string v = query_value(q, key);
+  return v.empty() ? fallback : float(std::atof(v.c_str()));
+}
+
+// Turns the browser's input packet into panel events. Every field is optional,
+// so dragging a slider and typing a value can arrive in the same request.
+void dispatch_ui_input(UiPanel& ui, const std::string& query) {
+  if (query_has(query, "x") || query_has(query, "y")) {
+    UiInputEvent e;
+    e.type = UiInputEvent::MousePos;
+    e.x = query_float(query, "x");
+    e.y = query_float(query, "y");
+    ui.push_event(e);
+  }
+  if (query_has(query, "b")) {
+    UiInputEvent e;
+    e.type = UiInputEvent::MouseButton;
+    e.button = int(query_float(query, "b"));
+    e.down = query_float(query, "d", 0.0f) > 0.5f;
+    ui.push_event(e);
+  }
+  if (query_has(query, "w")) {
+    const float amount = query_float(query, "w");
+    if (amount != 0.0f) {
+      UiInputEvent e;
+      e.type = UiInputEvent::MouseWheel;
+      e.amount = amount;
+      ui.push_event(e);
+    }
+  }
+  if (query_has(query, "k")) {
+    UiInputEvent e;
+    e.type = UiInputEvent::Key;
+    e.keycode = int(query_float(query, "k"));
+    e.down = query_float(query, "kd", 0.0f) > 0.5f;
+    ui.push_event(e);
+  }
+  if (query_has(query, "t")) {
+    UiInputEvent e;
+    e.type = UiInputEvent::Text;
+    e.text = query_value(query, "t");
+    ui.push_event(e);
+  }
+}
+
 void apply_params(Scene& s, const std::string& body) {
   float f;
   bool b;
@@ -181,6 +270,18 @@ void apply_params(Scene& s, const std::string& body) {
     if (parse_hair_color(str, c)) { s.hair.dye[0] = c[0]; s.hair.dye[1] = c[1]; s.hair.dye[2] = c[2]; }
   }
   if (json_number(body, "dyeStrength", f)) s.hair.dye_strength = f;
+  if (json_string(body, "dyeTip", str)) {
+    float c[3];
+    if (parse_hair_color(str, c)) { s.hair.dye_tip[0] = c[0]; s.hair.dye_tip[1] = c[1]; s.hair.dye_tip[2] = c[2]; }
+  }
+  if (json_number(body, "dyeGradient", f)) s.hair.dye_gradient = f;
+  if (json_number(body, "cutLength", f)) s.hair.cut_length = f;
+  if (json_number(body, "volume", f)) s.hair.volume = f;
+  if (json_number(body, "fillLight", f)) s.hair.fill_light = f;
+  if (json_number(body, "sheen", f)) s.hair.sheen = f;
+  if (json_number(body, "checker", f)) s.sky.checker = f;
+  if (json_number(body, "checkerScale", f)) s.sky.checker_scale = f;
+  if (json_number(body, "checkerFade", f)) s.sky.checker_fade = f;
   if (json_number(body, "rootDarken", f)) s.hair.root_darken = f;
   if (json_number(body, "colorVar", f)) s.hair.color_variation = f;
   if (json_bool(body, "headShadow", b)) s.hair.head_casts_shadow = b;
@@ -209,6 +310,8 @@ struct Session {
   uint32_t frame = 0;
   double time = 0.0;
   std::atomic<int> live_streams{0};
+  std::atomic<bool> ui_visible{true};
+  std::atomic<bool> quit{false};
 };
 
 struct WebServer::Impl {
@@ -219,10 +322,30 @@ struct WebServer::Impl {
   int listen_fd = -1;
   Session session;
   std::string base_dir = "assets/web";
+  std::string fonts_dir = "assets/fonts";
+  UiPanel ui;
+  float fps = 0.0f;
+  double last_frame_time = 0.0;
+  std::string save_dir = ".";
 };
 
 WebServer::WebServer(Gpu& gpu, const Assets& assets, Renderer& renderer, int port) {
   impl_ = new Impl{gpu, assets, renderer, port};
+  Impl& s = *impl_;
+
+  // Fonts live next to the asset bundle: assets/fonts/{Roboto-Regular,Roboto-Medium,
+  // MaterialDesignIcons-Subset}.ttf. The panel falls back to the built-in ImGui
+  // face if they are missing, so this is not fatal.
+  const char* candidates[] = {"assets/fonts", "../assets/fonts", "HairGenVulkan/assets/fonts"};
+  for (const char* d : candidates) {
+    if (!read_file(std::string(d) + "/Roboto-Regular.ttf").empty()) {
+      s.fonts_dir = d;
+      break;
+    }
+  }
+  const float ui_scale = renderer.width() >= 1100 ? 1.35f : (renderer.width() >= 900 ? 1.15f : 1.0f);
+  s.ui.init(s.fonts_dir, ui_scale);
+  s.ui.set_visible(true);
 }
 
 WebServer::~WebServer() {
@@ -279,6 +402,11 @@ void send_text(int cfd, const char* status, const char* type, const std::string&
 }
 
 // Renders one frame with the current scene and returns it as PNG bytes.
+//
+// The ImGui panel runs *after* the GPU frame: it reads the scene that was just
+// rendered, draws itself into the same RGBA buffer and writes any edits back, so
+// the next frame shows them. Editing one frame late is exactly how every
+// immediate-mode tool behaves, and it keeps the renderer untouched.
 std::vector<uint8_t> render_frame(WebServer::Impl& s, bool advance_time) {
   Scene scene;
   {
@@ -287,12 +415,45 @@ std::vector<uint8_t> render_frame(WebServer::Impl& s, bool advance_time) {
   }
   std::lock_guard<std::mutex> lock(s.session.render_mutex);
   s.renderer.set_scene(scene);
+  const double now = double(std::chrono::duration_cast<std::chrono::microseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch()).count()) * 1e-6;
+  const double dt = s.last_frame_time > 0.0 ? std::min(0.5, now - s.last_frame_time) : 1.0 / 30.0;
+  s.last_frame_time = now;
+  s.fps = float(s.fps * 0.85 + (1.0 / std::max(dt, 1e-3)) * 0.15);
+
   if (advance_time) {
-    s.session.time += 1.0 / 30.0;
+    s.session.time += dt;
     if (s.session.time > 1e6) s.session.time = 0.0;
   }
-  s.renderer.render(s.session.time, s.session.frame++);
-  return encode_png_rgba(s.renderer.width(), s.renderer.height(), s.renderer.read_pixels());
+  RenderStats stats = s.renderer.render(s.session.time, s.session.frame++);
+
+  const int w = s.renderer.width();
+  const int h = s.renderer.height();
+  std::vector<uint8_t> pixels = s.renderer.read_pixels();
+
+  if (s.ui.ready() && s.session.ui_visible) {
+    UiStats us;
+    us.width = w;
+    us.height = h;
+    us.samples = s.renderer.samples();
+    us.fps = s.fps;
+    us.cpu_ms = stats.cpu_ms;
+    us.gpu_ms = stats.gpu_ms;
+    us.triangles = stats.triangles;
+    us.strands = stats.strands;
+    const UiResult r = s.ui.frame(scene, us, pixels.data(), w, h, float(dt));
+    if (r.changed) {
+      std::lock_guard<std::mutex> slock(s.session.scene_mutex);
+      s.session.scene = scene;
+    }
+    if (r.save_png) {
+      const std::string path = s.save_dir + "/hairgen_frame.png";
+      write_png_rgba(path.c_str(), w, h, pixels);
+      printf("[hairgen] saved %s\n", path.c_str());
+      fflush(stdout);
+    }
+  }
+  return encode_png_rgba(w, h, pixels);
 }
 
 }  // namespace
@@ -328,10 +489,25 @@ int WebServer::run() {
     }
   }
 
-  printf("[hairgen] preview server on http://0.0.0.0:%d  (open the preview panel)\n", s.port);
+  printf("[hairgen] studio panel on http://0.0.0.0:%d  (dockable ImGui, baked into the stream)\n", s.port);
+  if (!s.ui.ready()) printf("[hairgen] ui: not ready\n");
   fflush(stdout);
 
   while (true) {
+    if (s.session.quit.load()) {
+      printf("[hairgen] panel requested quit\n");
+      return 0;
+    }
+    // Timed accept so the loop can notice a quit request from the panel (the
+    // panel runs on a connection thread, and the renderer must shut down from
+    // the main thread).
+    fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(fd, &rfds);
+    timeval tv{0, 200000};
+    const int ready = ::select(fd + 1, &rfds, nullptr, nullptr, &tv);
+    if (ready <= 0) continue;
+
     sockaddr_in client{};
     socklen_t clen = sizeof(client);
     int cfd = ::accept(fd, reinterpret_cast<sockaddr*>(&client), &clen);
@@ -347,11 +523,41 @@ int WebServer::run() {
       }
       const std::string path = request_path(req);
 
-      if (path == "/" || path == "/index.html") {
-        std::string html = read_file(s.base_dir + "/index.html");
+      // The panel is the default view: a canvas showing the composited frames
+      // with the dockable ImGui windows baked into them. The old DOM panel is
+      // still served at /classic (it drives the same scene over /params).
+      const bool wants_classic = (path == "/classic") || (path == "/classic.html");
+      if (path == "/" || path == "/studio.html" || wants_classic) {
+        const char* file = wants_classic ? "/index.html" : "/studio.html";
+        std::string html = read_file(s.base_dir + file);
+        if (html.empty() && !wants_classic) html = read_file(s.base_dir + "/index.html");
         if (html.empty())
-          html = "<html><body><h1>HairGenVulkan</h1><p>assets/web/index.html missing</p></body></html>";
+          html = "<html><body><h1>HairGenVulkan</h1><p>assets/web missing</p></body></html>";
         send_text(cfd, "200 OK", "text/html; charset=utf-8", html);
+      } else if (path == "/static/studio.js" || path == "/static/studio.css") {
+        const bool css = path.size() > 4 && path.compare(path.size() - 4, 4, ".css") == 0;
+        std::string content = read_file(s.base_dir + (css ? "/studio.css" : "/studio.js"));
+        send_text(cfd, "200 OK", css ? "text/css" : "application/javascript", content);
+      } else if (path == "/ui/input") {
+        // Query string only: the page fires these as fire-and-forget beacons.
+        const size_t q = req.find('?');
+        const std::string query = q == std::string::npos ? std::string()
+                                                         : req.substr(q + 1, req.find(' ', q) - q - 1);
+        dispatch_ui_input(s.ui, query);
+        send_text(cfd, "200 OK", "application/json", "{\"ok\":true}");
+      } else if (path == "/ui") {
+        char json[192];
+        snprintf(json, sizeof(json), "{\"visible\":%s,\"ready\":%s,\"width\":%d,\"height\":%d,\"fps\":%.2f}",
+                 s.session.ui_visible.load() ? "true" : "false", s.ui.ready() ? "true" : "false",
+                 s.renderer.width(), s.renderer.height(), double(s.fps));
+        send_text(cfd, "200 OK", "application/json", json);
+      } else if (path == "/ui/toggle") {
+        s.session.ui_visible = !s.session.ui_visible.load();
+        send_text(cfd, "200 OK", "application/json", s.session.ui_visible ? "{\"visible\":true}"
+                                                                         : "{\"visible\":false}");
+      } else if (path == "/ui/quit") {
+        s.session.quit = true;
+        send_text(cfd, "200 OK", "application/json", "{\"ok\":true}");
       } else if (path == "/style.css" || path == "/app.js") {
         std::string content = read_file(s.base_dir + path);
         send_text(cfd, "200 OK", path == "/style.css" ? "text/css" : "application/javascript", content);
@@ -419,6 +625,16 @@ int WebServer::run() {
     }).detach();
   }
   return 0;
+}
+
+
+void WebServer::set_ui_enabled(bool on) { impl_->session.ui_visible = on; }
+
+void WebServer::set_fonts_dir(const std::string& dir) {
+  if (dir.empty()) return;
+  impl_->fonts_dir = dir;
+  impl_->ui.set_visible(impl_->session.ui_visible);
+  impl_->ui.init(dir, impl_->renderer.width() >= 1100 ? 1.35f : (impl_->renderer.width() >= 900 ? 1.15f : 1.0f));
 }
 
 }  // namespace hgen

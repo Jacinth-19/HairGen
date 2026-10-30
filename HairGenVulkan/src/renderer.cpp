@@ -42,8 +42,13 @@ struct FrameUbo {
   float sky2[4];     // turbidity, rayleigh, mie, mieG
   float weather[4];  // rain, wetness, wind, windDir
   float weather2[4]; // gravity, puddles, lensDrops, time
+  float hair6[4];    // cutLength, volume, fillLight, unused
+  float dye3[4];     // ombre tip colour (rgb), gradient
+  float ground0[4];  // checker amount, scale, fade distance, unused
+  float ground1[4];  // checker light square (rgb), unused
+  float ground2[4];  // checker dark square (rgb), unused
 };
-static_assert(sizeof(FrameUbo) == (16 * 5 + 4 * 19) * 4, "unexpected UBO packing");
+static_assert(sizeof(FrameUbo) == (16 * 5 + 4 * 24) * 4, "unexpected UBO packing");
 
 void copy_mat(float* dst, const mat4& m) { std::memcpy(dst, m.m, sizeof(float) * 16); }
 
@@ -673,6 +678,8 @@ void Renderer::create_targets() {
 
 void Renderer::create_hair_geometry() {
   const auto& s = scene_.hair;
+  built_segments_ = s.segments;
+  built_hair_count_ = s.hair_count;
   hair_segments_ = uint32_t(std::max(4, s.segments));
   hair_strand_count_ = uint32_t(std::max(int(bundle_count_) * 4, s.hair_count));
   const float max_level = float(assets_.max_hair_levels);
@@ -1183,7 +1190,11 @@ void Renderer::create_descriptors() {
 
 void Renderer::set_scene(const Scene& scene) {
   scene_ = scene;
-  if (int(scene_.hair.segments) != int(hair_segments_) || scene_.hair.hair_count != int(hair_strand_count_ * 0 + scene_.hair.hair_count))
+  // Rebuild the strand geometry only when the *requested* count or resolution
+  // changed. (This used to compare the request against the per-bundle strand
+  // count and was therefore always false, so the panel's strand slider - and
+  // --hair-count on a live render - did nothing.)
+  if (scene_.hair.segments != built_segments_ || scene_.hair.hair_count != built_hair_count_)
     create_hair_geometry();
 }
 
@@ -1254,6 +1265,24 @@ void Renderer::update_frame_ubo(double time, uint32_t frame_index) {
   u.weather2[2] = w.lens_drops > 0.0f ? w.lens_drops : w.rain;
   u.weather2[3] = float(time) * w.speed;
   u.misc[3] = float(frame_index);
+
+  // Silhouette + shading controls added on top of the demo's operator stack.
+  u.hair6[0] = h.cut_length;
+  u.hair6[1] = h.volume;
+  u.hair6[2] = h.fill_light;
+  u.hair6[3] = float(h.material);
+  u.dye3[0] = h.dye_tip[0]; u.dye3[1] = h.dye_tip[1]; u.dye3[2] = h.dye_tip[2];
+  u.dye3[3] = h.dye_gradient;
+  // The floor's checkerboard: analytic in the shader, so only its parameters
+  // travel in the UBO.
+  u.ground0[0] = sk.checker;
+  u.ground0[1] = sk.checker_scale;
+  u.ground0[2] = sk.checker_fade;
+  u.ground0[3] = 0.0f;
+  u.ground1[0] = sk.checker_b[0]; u.ground1[1] = sk.checker_b[1]; u.ground1[2] = sk.checker_b[2];
+  u.ground1[3] = 0.0f;
+  u.ground2[0] = sk.checker_a[0]; u.ground2[1] = sk.checker_a[1]; u.ground2[2] = sk.checker_a[2];
+  u.ground2[3] = 0.0f;
 
   std::memcpy(ubo_.mapped, &u, sizeof(u));
 }

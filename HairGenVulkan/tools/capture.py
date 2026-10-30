@@ -31,10 +31,18 @@ STYLES = {
     'violet': ['--dye', 'violet'],
     'teal': ['--dye', 'teal'],
     'platinum': ['--dye', 'platinum'],
+    # Two-tone: an ombre from a dark root to a pale tip, and a harder dip dye.
+    'ombre': ['--dye', 'chestnut', '--dye-tip', 'honey', '--dye-gradient', '0.8'],
+    'dipdye': ['--dye', 'jet', '--dye-tip', 'rosa', '--dye-gradient', '1.6'],
+    'balayage': ['--dye', 'espresso', '--dye-tip', 'blonde', '--dye-gradient', '1.0'],
 }
 
 # Procedural hairstyles (one guide mesh, restyled by the operator stack).
-HAIRSTYLES = ['bob', 'sleek', 'wavy', 'curly', 'afro', 'pixie', 'long', 'punk']
+# Eight per sheet: the long/female set, then the short/male set.
+HAIRSTYLES = ['bob', 'lob', 'sleek', 'long', 'layered', 'wavy', 'curls', 'coils',
+              'afro', 'shag', 'pixie', 'fringe', 'volume', 'editorial', 'wet_look', 'punk',
+              'buzz', 'crew', 'fade', 'textured', 'side_part', 'quiff', 'pompadour',
+              'slick_back', 'curly_top', 'mohawk']
 
 # Weather presets: the Preetham atmosphere, the rain system, the wet ground and
 # the lens droplets, one still each.
@@ -47,6 +55,24 @@ WEATHER = [
     ('noon', ['--preset', 'noon', '--clouds', '0.35']),
     ('puddles', ['--preset', 'rain', '--puddles', '0.85', '--wind', '0.9']),
     ('wet-closeup', ['--preset', 'rain', '--dist', '1.9', '--exposure', '0.85']),
+]
+
+# Studio floor: the checkerboard is a perception aid (it gives the eye a scale
+# reference and makes the contact shadow read), so the sheet shows it on, off
+# and in its two colour schemes.
+GROUND = [
+    ('checker', ['--checker', '1.0']),
+    ('checker-off', ['--no-checker']),
+    ('checker-white', ['--checker', '1.0', '--checker-scale', '0.8']),
+    ('checker-fine', ['--checker', '1.0', '--checker-scale', '4.0', '--checker-fade', '4.0']),
+]
+
+# Lighting looks, straight from the panel's presets.
+LOOKS = [
+    ('studio', ['--rot', '3.05', '--sun-rot', '2.60', '--sun-tilt', '-0.55']),
+    ('golden', ['--preset', 'sunset']),
+    ('backlit', ['--sun-rot', '5.35', '--sun-tilt', '-0.30', '--bloom', '0.55', '--exposure', '0.85']),
+    ('overcast', ['--clouds', '0.85', '--turbidity', '4.5', '--sun-intensity', '0.7']),
 ]
 
 # ---------------------------------------------------------------- helpers
@@ -238,6 +264,20 @@ def main():
             render(binary, p, size, extra)
             stills.append((p, 'control: ' + name))
 
+        # Studio floor: the analytic checkerboard, on/off and at two scales.
+        for name, extra in GROUND:
+            p = os.path.join(out, 'stills', 'ground_%s.png' % name)
+            print('[capture] ground', name)
+            render(binary, p, size, extra)
+            stills.append((p, 'ground: ' + name))
+
+        # Lighting looks (the same presets the panel's Look menu offers).
+        for name, extra in LOOKS:
+            p = os.path.join(out, 'stills', 'look_%s.png' % name)
+            print('[capture] look', name)
+            render(binary, p, size, extra)
+            stills.append((p, 'look: ' + name))
+
         # Weather / liquid effects.
         for name, extra in WEATHER:
             p = os.path.join(out, 'stills', 'weather_%s.png' % name)
@@ -258,6 +298,24 @@ def main():
             print('[capture]', name)
             render(binary, p, size, extra)
             stills.append((p, name))
+
+        # The dockable ImGui panel. --ui-dump renders the UI on the CPU over a
+        # stand-in background, so these screenshots need no Vulkan device at all.
+        panel_pngs = []
+        full = os.path.join(out, 'stills', 'panel.png')
+        try:
+            run([binary, '--ui-dump', full, '--size', str(size)])
+            panel_pngs.append((full, 'panel'))
+        except SystemExit:
+            print('[capture] panel dump failed (fonts missing?)')
+        for win in ('hair', 'colour', 'styles', 'lighting', 'ground', 'weather', 'camera', 'output'):
+            p = os.path.join(out, 'stills', 'panel_%s.png' % win)
+            env = dict(os.environ, HGEN_UI_FOCUS=win)
+            try:
+                run([binary, '--ui-dump', p, '--size', str(size)], env=env)
+                panel_pngs.append((p, 'panel: ' + win))
+            except SystemExit:
+                pass
 
         # A high resolution hero for print / README.
         run([binary, '--out', os.path.join(out, 'hero_1536.png'), '--size', '1536', '--samples', '4',

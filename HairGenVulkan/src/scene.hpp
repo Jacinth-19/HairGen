@@ -1,5 +1,5 @@
-// scene.hpp - user facing parameters (shared by the CLI, the web UI and the
-// capture tool).
+// scene.hpp - user facing parameters (shared by the CLI, the ImGui panel and
+// the capture tool).
 #pragma once
 
 #include <cmath>
@@ -33,7 +33,7 @@ struct HairSettings {
   // shadows itself along polygon edges, which is what produced the hard
   // faceted patches on the forehead. The hair's shadow (a separate map) is the
   // one that matters, so by default the head does not cast.
-  bool head_casts_shadow = false;            // push strands out of the july_colliders.js spheres
+  bool head_casts_shadow = false;
 
   float density = 2.5f;       // shadow density ("shadows" slider)
   float length_var = 0.10f;
@@ -45,12 +45,20 @@ struct HairSettings {
         clump_exp = 0.0f;
   float curl_amount = 0.02f, curl_freq = 1.0f, curl_twists = 10.0f, curl_twist_exp = 0.3f, curl_exp = 0.0f;
 
-  // Ribbon width in pixels. Thin ribbons (1.9) resolve the fibre structure but
-  // leave the mass looking like spun sugar; at 3.2 the locks overlap into
-  // proper opaque clumps, which is what reads as hair at portrait framing.
+  // Ribbon width in pixels. Thin ribbons resolve the fibre structure but leave
+  // the mass looking like spun sugar; at 3.2 the locks overlap into proper
+  // opaque clumps, which is what reads as hair at portrait framing.
   float width_px = 3.2f;
   int hair_count = 34000;
   int segments = 32;
+
+  // ---- silhouette -------------------------------------------------------
+  // The guide mesh fixes where strands *can* go, so length and volume are the
+  // two controls that actually change the shape: cut_length shortens every
+  // strand along its own parameter (a buzz cut is ~0.25, the guide mesh's full
+  // length is 1) and volume lifts the mass away from the skull for big hair.
+  float cut_length = 1.0f;
+  float volume = 0.0f;
 
   // Fiber (Marschner) parameters - the demo's material LUTs are tuned for these.
   // Defaults are the *rosa* set (see below): the demo's blond tables are still
@@ -64,30 +72,82 @@ struct HairSettings {
   // Rosa is the default: the blond tables are kept selectable, not the start.
   int material = 1;
 
-  // ---- hair dye -------------------------------------------------------
+  // ---- hair dye ---------------------------------------------------------
   // The LUTs bake one fibre's absorption, so recolouring them means tinting the
-  // scattered radiance. `dye` is the target colour (linear), applied at
-  // `dye_strength` while keeping the luminance structure the LUTs provide.
-  float dye[3] = {0.356f, 0.062f, 0.115f};  // rosa: #E8556F in linear
+  // scattered radiance. `dye` is the colour at the roots (linear), `dye_tip` the
+  // colour at the ends; `dye_gradient` blends between them along the strand -
+  // a flat dye is gradient 0, an ombre/balayage is ~0.8, and a "dip dye" is a
+  // gradient above 1 (the tips saturate before the mid-lengths).
+  // Default: rosa #E8556F, converted to linear the same way the palette does, so
+  // the hex shown in the panel matches the swatch that is lit up. (It used to
+  // hold a hand-typed darker triple, which made the palette disagree with the
+  // start-up look.)
+  float dye[3] = {0.8069f, 0.0908f, 0.1595f};
+  float dye_tip[3] = {0.8069f, 0.0908f, 0.1595f};  // same by default -> flat dye
   float dye_strength = 0.88f;
-  float root_darken = 0.55f;    // roots are denser and less exposed -> darker
-  float color_variation = 0.22f;  // per-strand tint jitter (mravella/hair)
-  float sheen = 0.35f;          // extra sky-facing sheen
+  float dye_gradient = 0.0f;
+  // 1.0 reproduces mravella/hair's MIN_COLOR ramp exactly (root = 0.5 of the
+  // tip value, from MAX_COLOR_START of the strand); 0 turns it off.
+  float root_darken = 1.0f;
+  float color_variation = 0.22f; // per-strand tint jitter (mravella/hair)
+  float sheen = 0.35f;           // extra sky-facing sheen / polish
+  float fill_light = 0.22f;      // cool fill from the shadow side (mravella/hair)
 };
-
 
 // ---- hair dye colour parsing -------------------------------------------
 // sRGB hex (#RRGGBB) or a named colour -> linear RGB. The renderer shades in
 // linear radiance, so the conversion happens once, here.
-struct DyeColor { const char* name; unsigned rgb; };
+//
+// `group` is only used by the panel, which lays the swatches out in sections:
+// naturals first, then the fashion colours. Names are the CLI vocabulary
+// (`--dye copper`), so they are stable even if the panel changes.
+struct DyeColor {
+  const char* name;
+  unsigned rgb;
+  const char* group;
+};
 inline const DyeColor kDyeColors[] = {
-    {"rosa", 0xE8556F},    {"pink", 0xF26A85},     {"rose", 0xE0596E},
-    {"platinum", 0xEDE4D6},{"blonde", 0xD9B978},   {"blond", 0xD9B978},
-    {"copper", 0xC0562A},  {"auburn", 0x7E3018},   {"burgundy", 0x5C1226},
-    {"black", 0x161214},   {"brown", 0x4A2C1C},    {"chestnut", 0x6B3A22},
-    {"violet", 0x7B4BCB},  {"teal", 0x2C8C8C},     {"silver", 0xC6C8CE},
-    {"sunset", 0xFF7A3E},  {"mint", 0x8FE0C0},     {"lilac", 0xC7A9F0},
-    {"raven", 0x241E28},   {"wine", 0x8E1F3A},
+    // --- naturals ------------------------------------------------------
+    {"jet", 0x14121A, "Natural"},
+    {"soft_black", 0x241E28, "Natural"},
+    {"raven", 0x2B1720, "Natural"},
+    {"espresso", 0x3A2418, "Natural"},
+    {"chocolate", 0x4A2C1C, "Natural"},
+    {"chestnut", 0x6B3A22, "Natural"},
+    {"hazelnut", 0x7E5535, "Natural"},
+    {"caramel", 0xA9702F, "Natural"},
+    {"honey", 0xC08A3E, "Natural"},
+    {"blonde", 0xD9B978, "Natural"},
+    {"platinum", 0xEDE4D6, "Natural"},
+    {"ash", 0x9A9384, "Natural"},
+    {"silver", 0xC6C8CE, "Natural"},
+    {"ginger", 0xB4531F, "Natural"},
+    {"copper", 0xC0562A, "Natural"},
+    {"auburn", 0x7E3018, "Natural"},
+    {"mahogany", 0x6A2418, "Natural"},
+    {"burgundy", 0x5C1226, "Natural"},
+    {"wine", 0x8E1F3A, "Natural"},
+    {"cherry", 0xA8182F, "Natural"},
+    // --- fashion -------------------------------------------------------
+    {"rosa", 0xE8556F, "Fashion"},
+    {"pink", 0xF26A85, "Fashion"},
+    {"rose", 0xE0596E, "Fashion"},
+    {"magenta", 0xC12A8C, "Fashion"},
+    {"violet", 0x7B4BCB, "Fashion"},
+    {"lilac", 0xC7A9F0, "Fashion"},
+    {"lavender", 0xA48CE0, "Fashion"},
+    {"teal", 0x2C8C8C, "Fashion"},
+    {"emerald", 0x1F9A5A, "Fashion"},
+    {"mint", 0x8FE0C0, "Fashion"},
+    {"ocean", 0x1E6FBF, "Fashion"},
+    {"sky", 0x6FC4E8, "Fashion"},
+    {"denim", 0x2C4A72, "Fashion"},
+    {"sunset", 0xFF7A3E, "Fashion"},
+    {"tangerine", 0xF08A1E, "Fashion"},
+    {"gold", 0xE8C36A, "Fashion"},
+    {"neon_green", 0x9BEA3A, "Fashion"},
+    {"rose_gold", 0xE0A08E, "Fashion"},
+    {"smoke", 0x4A4A52, "Fashion"},
 };
 
 inline bool parse_hair_color(const std::string& in, float out[3]) {
@@ -109,56 +169,101 @@ inline bool parse_hair_color(const std::string& in, float out[3]) {
   return true;
 }
 
+// The reverse direction, for the panel (which edits sRGB and shows the hex).
+inline void linear_to_hair_color(const float in[3], unsigned& rgb) {
+  rgb = 0;
+  for (int c = 0; c < 3; ++c) {
+    float v = in[c] < 0.0f ? 0.0f : (in[c] > 1.0f ? 1.0f : in[c]);
+    float s = v <= 0.0031308f ? v * 12.92f : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
+    rgb = (rgb << 8) | unsigned(std::lround(s * 255.0f));
+  }
+}
+
 // ---- hairstyle presets -------------------------------------------------
-// The demo only ships one hair mesh; the "styles" here are procedural: the same
-// roots and the same strip, restyled by the fuzz / frizz / kink / clump / curl
-// operator stack (the technique the SIGGRAPH'24 hair-mesh paper uses to author
-// many styles from one guide mesh). Each preset is a full set of operator
-// values, so switching styles is one call.
+// The demo ships one hair mesh; a "style" here is a full set of operator values
+// over that mesh - the technique the SIGGRAPH'24 hair-mesh paper uses to author
+// many styles from one guide mesh - plus the two silhouette controls added for
+// this port (cut length and volume). `sex` is only a gallery tag.
+//
+// Every entry is tuned against the renderer: `curl/kink` set the lock structure,
+// `clump` how strongly strands gather, `fuzz/frizz` the flyaway halo, `width`
+// how much of the mass each ribbon covers, and `cut/volume` the shape.
 struct HairstylePreset {
-  const char* name;
+  const char* name;      // CLI id
+  const char* label;     // panel label
+  const char* sex;       // gallery grouping: Female / Male / Unisex
   float curl_amount, curl_freq, curl_twists;
   float kink_amount, kink_freq_uv;
   float clump_percent, clump_size, clump_var;
   float fuzz_amount, frizz_amount;
   float length_var, width_px;
   int hair_count;
+  float cut_length, volume;
+  const char* dye_hint;  // suggested dye name (panel colour chip)
 };
 
 inline const HairstylePreset kHairstyles[] = {
-    // The strip's silhouette is fixed by the guide mesh, so the presets
-    // differentiate themselves in *texture*: curl/kink amount, clump structure,
-    // fuzz (stray fibres) and ribbon width (how much of the mass each strand
-    // covers). Values are tuned against the renderer, not guessed.
-    {"bob",    0.02f, 1.0f, 10.0f, 0.020f, 2.0f, 0.90f, 0.000f, 0.10f, 0.100f, 0.020f, 0.10f, 2.31f, 20000},
-    {"sleek",  0.03f, 1.2f,  9.0f, 0.010f, 1.4f, 0.96f, 0.000f, 0.04f, 0.030f, 0.008f, 0.05f, 2.15f, 26000},
-    {"wavy",   0.05f, 1.5f, 12.0f, 0.030f, 2.4f, 0.86f, 0.008f, 0.20f, 0.080f, 0.030f, 0.14f, 2.80f, 22000},
-    {"curly",  0.16f, 2.0f, 16.0f, 0.140f, 3.2f, 0.78f, 0.016f, 0.35f, 0.300f, 0.060f, 0.20f, 3.96f, 24000},
-    {"afro",   0.18f, 2.6f, 20.0f, 0.180f, 3.8f, 0.55f, 0.028f, 0.50f, 0.420f, 0.120f, 0.26f, 4.62f, 26000},
-    {"pixie",  0.09f, 1.8f, 14.0f, 0.070f, 2.8f, 0.82f, 0.010f, 0.28f, 0.180f, 0.045f, 0.30f, 3.30f, 22000},
-    {"long",   0.04f, 1.3f, 11.0f, 0.018f, 1.8f, 0.93f, 0.000f, 0.06f, 0.060f, 0.014f, 0.06f, 2.15f, 20000},
-    {"punk",   0.12f, 3.0f, 24.0f, 0.200f, 4.2f, 0.50f, 0.040f, 0.55f, 0.240f, 0.200f, 0.24f, 3.63f, 24000},
+    // ---- female / long ---------------------------------------------------
+    {"bob",     "Bob",            "Female", 0.02f, 1.0f, 10.0f, 0.020f, 2.0f, 0.90f, 0.00f, 0.10f, 0.10f, 0.020f, 0.10f, 2.31f, 20000, 0.62f, 0.10f, "chocolate"},
+    {"lob",     "Long bob",       "Female", 0.03f, 1.1f, 11.0f, 0.022f, 2.0f, 0.92f, 0.01f, 0.10f, 0.09f, 0.020f, 0.10f, 2.40f, 22000, 0.74f, 0.14f, "caramel"},
+    {"sleek",   "Sleek / glass",  "Female", 0.03f, 1.2f,  9.0f, 0.010f, 1.4f, 0.96f, 0.00f, 0.04f, 0.03f, 0.008f, 0.05f, 2.15f, 26000, 0.96f, 0.04f, "jet"},
+    {"long",    "Long & flowing","Female", 0.04f, 1.3f, 11.0f, 0.018f, 1.8f, 0.93f, 0.00f, 0.06f, 0.06f, 0.014f, 0.06f, 2.15f, 20000, 1.00f, 0.08f, "honey"},
+    {"layered", "Long layers",    "Female", 0.06f, 1.4f, 12.0f, 0.030f, 2.2f, 0.88f, 0.01f, 0.14f, 0.10f, 0.060f, 0.18f, 2.85f, 24000, 0.92f, 0.16f, "auburn"},
+    {"wavy",    "Beach waves",    "Female", 0.05f, 1.5f, 12.0f, 0.030f, 2.4f, 0.86f, 0.01f, 0.20f, 0.08f, 0.030f, 0.14f, 2.80f, 22000, 0.90f, 0.18f, "honey"},
+    {"curls",   "Defined curls",  "Female", 0.16f, 2.0f, 16.0f, 0.140f, 3.2f, 0.78f, 0.02f, 0.35f, 0.30f, 0.060f, 0.20f, 3.96f, 24000, 0.80f, 0.26f, "chestnut"},
+    {"coils",   "Tight coils",    "Female", 0.22f, 2.4f, 19.0f, 0.200f, 3.6f, 0.66f, 0.02f, 0.42f, 0.38f, 0.090f, 0.24f, 4.20f, 26000, 0.72f, 0.34f, "soft_black"},
+    {"afro",    "Afro",           "Unisex", 0.18f, 2.6f, 20.0f, 0.180f, 3.8f, 0.55f, 0.03f, 0.50f, 0.42f, 0.120f, 0.26f, 4.62f, 26000, 0.70f, 0.62f, "soft_black"},
+    {"shag",    "Shag",           "Unisex", 0.09f, 1.9f, 15.0f, 0.090f, 3.0f, 0.80f, 0.02f, 0.34f, 0.24f, 0.140f, 0.22f, 3.40f, 24000, 0.70f, 0.24f, "auburn"},
+    {"pixie",   "Pixie",          "Female", 0.09f, 1.8f, 14.0f, 0.070f, 2.8f, 0.82f, 0.01f, 0.28f, 0.18f, 0.045f, 0.30f, 3.30f, 22000, 0.42f, 0.12f, "burgundy"},
+    {"fringe",  "Blunt fringe",   "Female", 0.02f, 1.0f, 10.0f, 0.014f, 1.8f, 0.95f, 0.00f, 0.05f, 0.04f, 0.010f, 0.05f, 2.25f, 22000, 0.58f, 0.06f, "jet"},
+    // ---- male ------------------------------------------------------------
+    {"buzz",    "Buzz cut",       "Male",   0.05f, 1.4f,  8.0f, 0.090f, 3.0f, 0.70f, 0.00f, 0.10f, 0.18f, 0.030f, 0.14f, 2.60f, 24000, 0.24f, 0.02f, "soft_black"},
+    {"crew",    "Crew cut",       "Male",   0.06f, 1.5f,  9.0f, 0.070f, 2.6f, 0.78f, 0.00f, 0.12f, 0.14f, 0.035f, 0.12f, 2.60f, 24000, 0.34f, 0.05f, "chocolate"},
+    {"fade",    "Fade",           "Male",   0.04f, 1.3f,  8.0f, 0.055f, 2.4f, 0.80f, 0.00f, 0.08f, 0.10f, 0.020f, 0.08f, 2.45f, 24000, 0.28f, 0.03f, "jet"},
+    {"textured","Textured crop",  "Male",   0.10f, 1.7f, 13.0f, 0.110f, 3.2f, 0.74f, 0.01f, 0.22f, 0.16f, 0.060f, 0.18f, 3.00f, 24000, 0.40f, 0.08f, "ash"},
+    {"side_part","Side part",     "Male",   0.03f, 1.2f, 10.0f, 0.020f, 1.8f, 0.94f, 0.00f, 0.05f, 0.05f, 0.015f, 0.06f, 2.30f, 24000, 0.48f, 0.06f, "espresso"},
+    {"quiff",   "Quiff",          "Male",   0.05f, 1.5f, 11.0f, 0.040f, 2.2f, 0.88f, 0.01f, 0.12f, 0.08f, 0.040f, 0.10f, 2.70f, 24000, 0.52f, 0.16f, "caramel"},
+    {"pompadour","Pompadour",     "Male",   0.04f, 1.3f, 10.0f, 0.030f, 2.0f, 0.92f, 0.01f, 0.10f, 0.06f, 0.030f, 0.08f, 2.55f, 24000, 0.56f, 0.24f, "jet"},
+    {"slick_back","Slick back",   "Male",   0.02f, 1.1f,  9.0f, 0.010f, 1.3f, 0.97f, 0.00f, 0.03f, 0.02f, 0.008f, 0.04f, 2.20f, 26000, 0.50f, 0.04f, "soft_black"},
+    {"curly_top","Curly top",     "Male",   0.15f, 1.9f, 15.0f, 0.120f, 3.1f, 0.74f, 0.02f, 0.30f, 0.26f, 0.070f, 0.20f, 3.70f, 24000, 0.44f, 0.20f, "chestnut"},
+    {"mohawk",  "Faux hawk",      "Unisex", 0.11f, 2.2f, 18.0f, 0.150f, 4.0f, 0.62f, 0.03f, 0.40f, 0.22f, 0.090f, 0.20f, 3.55f, 24000, 0.50f, 0.42f, "teal"},
+    // ---- editorial / unisex ---------------------------------------------
+    {"punk",    "Spikes",         "Unisex", 0.12f, 3.0f, 24.0f, 0.200f, 4.2f, 0.50f, 0.04f, 0.55f, 0.24f, 0.200f, 0.24f, 3.63f, 24000, 0.46f, 0.30f, "rosa"},
+    {"wet_look","Wet look",       "Unisex", 0.03f, 1.2f, 10.0f, 0.012f, 1.5f, 0.99f, 0.00f, 0.02f, 0.01f, 0.005f, 0.03f, 2.05f, 28000, 0.62f, 0.02f, "jet"},
+    {"volume",  "Big volume",     "Female", 0.10f, 1.8f, 14.0f, 0.110f, 3.0f, 0.72f, 0.02f, 0.40f, 0.30f, 0.100f, 0.22f, 4.10f, 26000, 0.86f, 0.46f, "honey"},
+    {"editorial","Editorial grey","Unisex", 0.07f, 1.6f, 12.0f, 0.060f, 2.6f, 0.86f, 0.01f, 0.18f, 0.14f, 0.050f, 0.14f, 2.90f, 24000, 0.58f, 0.14f, "silver"},
 };
+inline constexpr int kHairstyleCount = int(sizeof(kHairstyles) / sizeof(kHairstyles[0]));
 
+inline int hairstyle_index(const std::string& name) {
+  for (int i = 0; i < kHairstyleCount; ++i)
+    if (name == kHairstyles[i].name) return i;
+  return -1;
+}
+
+// Applies a preset's *style* values. The dye is left alone: the gallery only
+// offers the colour as a suggestion, switching style must not throw away a
+// colour the user picked.
 inline bool apply_hairstyle(struct HairSettings& h, const std::string& name) {
-  for (const HairstylePreset& p : kHairstyles) {
-    if (name != p.name) continue;
-    h.curl_amount = p.curl_amount;
-    h.curl_freq = p.curl_freq;
-    h.curl_twists = p.curl_twists;
-    h.kink_amount = p.kink_amount;
-    h.kink_freq_uv = p.kink_freq_uv;
-    h.clump_percent = p.clump_percent;
-    h.clump_size = p.clump_size;
-    h.clump_var = p.clump_var;
-    h.fuzz_amount = p.fuzz_amount;
-    h.frizz_amount = p.frizz_amount;
-    h.length_var = p.length_var;
-    h.width_px = p.width_px;
-    h.hair_count = p.hair_count;
-    return true;
-  }
-  return false;
+  const int idx = hairstyle_index(name);
+  if (idx < 0) return false;
+  const HairstylePreset& p = kHairstyles[idx];
+  h.curl_amount = p.curl_amount;
+  h.curl_freq = p.curl_freq;
+  h.curl_twists = p.curl_twists;
+  h.kink_amount = p.kink_amount;
+  h.kink_freq_uv = p.kink_freq_uv;
+  h.clump_percent = p.clump_percent;
+  h.clump_size = p.clump_size;
+  h.clump_var = p.clump_var;
+  h.fuzz_amount = p.fuzz_amount;
+  h.frizz_amount = p.frizz_amount;
+  h.length_var = p.length_var;
+  h.width_px = p.width_px;
+  h.hair_count = p.hair_count;
+  h.cut_length = p.cut_length;
+  h.volume = p.volume;
+  return true;
 }
 
 struct SkySettings {
@@ -174,6 +279,17 @@ struct SkySettings {
   bool show_ground = true;
   float ground_y = -0.55f;
   bool show_hair_mesh = false;
+
+  // ---- ground ----------------------------------------------------------
+  // A studio checkerboard under the bust. It is generated analytically in
+  // ground.frag (no texture fetch): the square size is in world units and the
+  // edge is filtered against the screen-space footprint, so it stays crisp up
+  // close and fades to the stone instead of aliasing into moire far away.
+  float checker = 1.0f;        // 0 = plain stone, 1 = full checkerboard
+  float checker_scale = 1.6f;  // squares per world unit (1 = 0.5 m squares)
+  float checker_fade = 7.0f;   // distance (m) at which the pattern dissolves
+  float checker_a[3] = {0.196f, 0.196f, 0.202f};  // dark square (linear)
+  float checker_b[3] = {0.585f, 0.585f, 0.590f};  // light square (linear)
 
   // ---- atmosphere (Preetham et al. 1999) --------------------------------
   // Turbidity: 2 = crystal clear, 4 = hazy, 10 = very polluted.
@@ -209,6 +325,9 @@ struct RenderOptions {
   float fps = 30.0f;
   bool bloom = true;
   bool write_json = false;
+  bool ui = true;         // draw the ImGui panel into the preview
+  std::string ui_dump;    // --ui-dump FILE: panel-only PNG (no Vulkan needed)
+  std::string fonts_dir;  // where Roboto + the icon subset live ("" = search)
 };
 
 struct Scene {
